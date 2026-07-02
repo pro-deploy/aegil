@@ -1,0 +1,16 @@
+{
+  "name": "KROKKI · Панель администратора",
+  "short_name": "KROKKI admin",
+  "description": "Локальная панель супер-администратора платформы KROKKI",
+  "lang": "ru",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#161311",
+  "theme_color": "#161311",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

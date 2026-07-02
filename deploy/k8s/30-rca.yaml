@@ -1,0 +1,56 @@
+# Сервис детерминированного анализа RCA (ADR-0032, Часть B). CPU-only, читает окно
+# логов из Loki и отдаёт вердикт по пятиполевой схеме. На управляющем узле, рядом с
+# наблюдаемостью; видеокарта не используется. Образ собирается и импортируется в
+# k3s как остальные (deploy/build.sh).
+apiVersion: v1
+kind: Service
+metadata:
+  name: rca
+  namespace: sentinel
+spec:
+  selector: {app: rca}
+  ports: [{name: http, port: 9107, targetPort: 9107}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca
+  namespace: sentinel
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: rca}}
+  template:
+    metadata:
+      labels: {app: rca}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/role: control}
+      containers:
+        - name: rca
+          image: REGISTRY_PLACEHOLDER/kube-sentinel/rca:0.12.0
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 9107}]
+          # Адреса ML, POSTGRES_DSN и ключи S3 (для записи примеров и синхронизации
+          # модели маршрутизации) берём из общих config и secrets.
+          envFrom:
+            - configMapRef: {name: krokki-config}
+            - secretRef: {name: krokki-secrets}
+          env:
+            - {name: LOKI_URL, value: "http://loki:3100"}
+            - {name: LOKI_QUERY, value: '{namespace="krokki"}'}
+            # Каталог обученной модели (эфемерный, ресинк из S3 при старте и /reload-model).
+            - {name: RCA_SETFIT_DIR, value: "/tmp/setfit-router"}
+            - {name: RCA_MODEL_KEY, value: "rca/setfit-router.tar.gz"}
+            # Контекст Kubernetes в логи через downward API (ADR-0032, A.8).
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+          readinessProbe:
+            httpGet: {path: /health, port: 9107}
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests: {cpu: "250m", memory: 768Mi}
+            limits: {memory: 2Gi}

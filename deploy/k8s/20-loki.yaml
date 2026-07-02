@@ -1,0 +1,104 @@
+# Хранилище логов Loki (ADR-0032, A.9). Монолитный режим, файловое хранилище,
+# ретенция восемь суток (192 часа) под baseline с недельным лагом. Живёт на
+# управляющем узле рядом с приложением; ML-узел не затрагивается. Лимиты выставлены
+# скромно под малый объём (до ~5 млн строк в сутки).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: sentinel
+data:
+  loki.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9095
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    limits_config:
+      retention_period: 192h
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      ingestion_rate_mb: 8
+      ingestion_burst_size_mb: 16
+      max_streams_per_user: 10000
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+    analytics:
+      reporting_enabled: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: sentinel
+spec:
+  selector: {app: loki}
+  ports: [{name: http, port: 3100, targetPort: 3100}]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-data
+  namespace: sentinel
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: sentinel
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: loki}}
+  template:
+    metadata:
+      labels: {app: loki}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/role: control}
+      securityContext: {fsGroup: 10001}
+      containers:
+        - name: loki
+          image: grafana/loki:3.1.1
+          args: ["-config.file=/etc/loki/loki.yaml"]
+          ports: [{containerPort: 3100}]
+          readinessProbe:
+            httpGet: {path: /ready, port: 3100}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          volumeMounts:
+            - {name: config, mountPath: /etc/loki}
+            - {name: data, mountPath: /loki}
+          resources:
+            requests: {cpu: "250m", memory: 512Mi}
+            limits: {memory: 1Gi}
+      volumes:
+        - name: config
+          configMap: {name: loki-config}
+        - name: data
+          persistentVolumeClaim: {claimName: loki-data}

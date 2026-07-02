@@ -1,0 +1,6 @@
+# Пространство имён продукта. Все компоненты kube-sentinel живут здесь. Имя можно сменить, тогда
+# согласуйте его во всех манифестах (namespace) и в переменной NAMESPACE панели и RCA.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentinel

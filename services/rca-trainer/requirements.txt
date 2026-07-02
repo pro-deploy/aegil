@@ -1,0 +1,12 @@
+# Тренер SetFit (CPU по умолчанию). torch ставится CPU-колесом в Dockerfile до этих
+# зависимостей, чтобы setfit не притянул тяжёлую CUDA-сборку.
+# Версия transformers обязательно закрепляется ниже пятой мажорной по той же причине, что
+# и в сервисе rca: начиная с transformers 5.0 удалена функция default_logdir, на которую
+# опирается setfit.training_args, поэтому без верхней границы обучение упало бы на импорте
+# setfit в train_and_upload (сбой при этом молча гасится широким перехватом и виден лишь
+# строкой training failed). Диапазон согласован: setfit требует transformers не ниже 4.41.
+transformers>=4.41,<5
+setfit>=1.0
+datasets>=2.19
+psycopg2-binary>=2.9
+boto3>=1.34

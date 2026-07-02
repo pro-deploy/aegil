@@ -1,0 +1,12 @@
+# Артефакты состояния панели (том /data в кластере), локальные журналы, кэши.
+*.log.jsonl
+agent-mode.txt
+incidents-*.log.jsonl
+__pycache__/
+*.pyc
+.DS_Store
+.env
+# Локально обученные модели и датасеты-выгрузки.
+*.tar.gz
+setfit-*/
+.cache/

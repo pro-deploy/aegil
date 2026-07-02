@@ -1,0 +1,127 @@
+# Агент сбора логов Grafana Alloy (ADR-0032, A.9). Забирает логи подов через
+# Kubernetes API, обогащает метками namespace/pod/node/container/app (контекст
+# кластера, A.8), маскирует персональные данные до отправки (почта, телефоны, A.3)
+# и пишет в Loki. Одна реплика на управляющем узле.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: sentinel
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: krokki-alloy
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, namespaces, nodes]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: krokki-alloy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: krokki-alloy
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: sentinel
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: sentinel
+data:
+  config.alloy: |
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    discovery.relabel "pods" {
+      targets = discovery.kubernetes.pods.targets
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_node_name"]
+        target_label  = "node"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app"]
+        target_label  = "app"
+      }
+    }
+
+    loki.source.kubernetes "pods" {
+      targets    = discovery.relabel.pods.output
+      forward_to = [loki.process.pii.receiver]
+    }
+
+    // Маскирование персональных данных до отправки в хранилище (граница privacy,
+    // 152-ФЗ и глава 16.3): адреса электронной почты и телефонные номера.
+    loki.process "pii" {
+      stage.replace {
+        expression = "(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}"
+        replace    = "<email>"
+      }
+      stage.replace {
+        expression = "\\+?\\d[\\d\\-\\s()]{9,}\\d"
+        replace    = "<phone>"
+      }
+      forward_to = [loki.write.default.receiver]
+    }
+
+    loki.write "default" {
+      endpoint {
+        url = "http://loki:3100/loki/api/v1/push"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: sentinel
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: alloy}}
+  template:
+    metadata:
+      labels: {app: alloy}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/role: control}
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.3.1
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy
+            - --server.http.listen-addr=0.0.0.0:12345
+          ports: [{containerPort: 12345, name: http}]
+          volumeMounts:
+            - {name: config, mountPath: /etc/alloy}
+            - {name: data, mountPath: /var/lib/alloy}
+          resources:
+            requests: {cpu: "100m", memory: 128Mi}
+            limits: {memory: 256Mi}
+      volumes:
+        - name: config
+          configMap: {name: alloy-config}
+        - name: data
+          emptyDir: {}

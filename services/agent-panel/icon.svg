@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="KROKKI">
+  <rect width="512" height="512" rx="116" fill="#FF5000"/>
+  <path d="M180 132 V380 M180 256 L318 132 M180 256 L326 380"
+        stroke="#161210" stroke-width="46" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

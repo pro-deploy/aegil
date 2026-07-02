@@ -1,0 +1,8 @@
+# Рантайм-артефакты панели (не коммитим)
+audit.log.jsonl
+incidents.log.jsonl
+incidents-*.log.jsonl
+agent-guards.log.jsonl
+agent-mode.txt
+__pycache__/
+*.pyc

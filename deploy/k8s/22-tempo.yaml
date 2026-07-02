@@ -1,0 +1,96 @@
+# Хранилище трасс Grafana Tempo (ADR-0032, A.7 второй слой). Монолитный режим,
+# локальное файловое хранилище, ретенция трасс 72 часа, приёмник OTLP (gRPC 4317
+# и HTTP 4318). Живёт на управляющем узле. Скромные лимиты под малый объём.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+  namespace: sentinel
+data:
+  tempo.yaml: |
+    server:
+      http_listen_port: 3200
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+    ingester:
+      max_block_duration: 5m
+    compactor:
+      compaction:
+        block_retention: 72h
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/blocks
+        wal:
+          path: /var/tempo/wal
+    usage_report:
+      reporting_enabled: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: sentinel
+spec:
+  selector: {app: tempo}
+  ports:
+    - {name: http, port: 3200, targetPort: 3200}
+    - {name: otlp-grpc, port: 4317, targetPort: 4317}
+    - {name: otlp-http, port: 4318, targetPort: 4318}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tempo-data
+  namespace: sentinel
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 15Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo
+  namespace: sentinel
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: tempo}}
+  template:
+    metadata:
+      labels: {app: tempo}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/role: control}
+      securityContext: {fsGroup: 10001}
+      containers:
+        - name: tempo
+          image: grafana/tempo:2.5.0
+          args: ["-config.file=/etc/tempo/tempo.yaml"]
+          ports:
+            - {containerPort: 3200}
+            - {containerPort: 4317}
+            - {containerPort: 4318}
+          readinessProbe:
+            httpGet: {path: /ready, port: 3200}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          volumeMounts:
+            - {name: config, mountPath: /etc/tempo}
+            - {name: data, mountPath: /var/tempo}
+          resources:
+            requests: {cpu: "250m", memory: 512Mi}
+            limits: {memory: 1Gi}
+      volumes:
+        - name: config
+          configMap: {name: tempo-config}
+        - name: data
+          persistentVolumeClaim: {claimName: tempo-data}

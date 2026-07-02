@@ -1,0 +1,40 @@
+# Тренер классификатора маршрутизации SetFit (ADR-0032, Часть B; активное обучение).
+# CronJob на GPU-узле (мощнее по процессору и памяти), обучение по умолчанию на
+# процессоре, чтобы не конкурировать с vLLM за видеопамять. Запускается ежечасно, но
+# train.py сам решает по порогу новых примеров, дообучать или выйти. Читает примеры
+# из Postgres и настройки S3 из общих config и secrets, выгружает модель в S3.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rca-trainer
+  namespace: sentinel
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          nodeSelector: {node-role.kubernetes.io/role: gpu}
+          # GPU-узел затейнчен krokki.io/gpu=true:NoSchedule; без парной toleration под
+          # тренера навсегда останется Pending и контур самообучения SetFit не замкнётся.
+          # Обучение при этом идёт на CPU (RCA_TRAIN_DEVICE=cpu), видеопамять не занимая.
+          tolerations: [{key: krokki.io/gpu, operator: Equal, value: "true", effect: NoSchedule}]
+          restartPolicy: Never
+          containers:
+            - name: rca-trainer
+              image: REGISTRY_PLACEHOLDER/kube-sentinel/rca-trainer:0.13.2
+              imagePullPolicy: IfNotPresent
+              envFrom:
+                - configMapRef: {name: krokki-config}
+                - secretRef: {name: krokki-secrets}
+              env:
+                - {name: RCA_TRAIN_DEVICE, value: "cpu"}
+                - {name: RCA_TRAIN_MIN_NEW, value: "8"}
+                - {name: RCA_MODEL_KEY, value: "rca/setfit-router.tar.gz"}
+              resources:
+                requests: {cpu: "1", memory: 2Gi}
+                limits: {memory: 6Gi}

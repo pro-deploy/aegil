@@ -1,0 +1,98 @@
+# Панель Grafana (ADR-0032, A.9). Единый обзор логов (Loki) и трасс (Tempo),
+# связанных по trace_id: из строки лога переход в трассу и обратно. Источники
+# провижинятся автоматически. Пароль администратора берётся из секрета
+# grafana-admin (создайте: kubectl -n krokki create secret generic grafana-admin
+# --from-literal=password=...). Доступ через port-forward или отдельное правило
+# ingress (здесь не добавляется, чтобы не трогать 50-ingress.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: sentinel
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        uid: loki
+        access: proxy
+        url: http://loki:3100
+        jsonData:
+          derivedFields:
+            - name: trace_id
+              matcherRegex: '"trace_id":"(\w+)"'
+              datasourceUid: tempo
+              url: '$${__value.raw}'
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        access: proxy
+        url: http://tempo:3200
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            filterByTraceID: true
+            spanStartTimeShift: -1h
+            spanEndTimeShift: 1h
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: sentinel
+spec:
+  selector: {app: grafana}
+  ports: [{name: http, port: 3000, targetPort: 3000}]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: sentinel
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: sentinel
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: grafana}}
+  template:
+    metadata:
+      labels: {app: grafana}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/role: control}
+      securityContext: {fsGroup: 472}
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.1.0
+          ports: [{containerPort: 3000}]
+          env:
+            - {name: GF_SECURITY_ADMIN_USER, value: "admin"}
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: grafana-admin, key: password}}
+            - {name: GF_ANALYTICS_REPORTING_ENABLED, value: "false"}
+            - {name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: "false"}
+          readinessProbe:
+            httpGet: {path: /api/health, port: 3000}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          volumeMounts:
+            - {name: datasources, mountPath: /etc/grafana/provisioning/datasources}
+            - {name: data, mountPath: /var/lib/grafana}
+          resources:
+            requests: {cpu: "100m", memory: 256Mi}
+            limits: {memory: 512Mi}
+      volumes:
+        - name: datasources
+          configMap: {name: grafana-datasources}
+        - name: data
+          persistentVolumeClaim: {claimName: grafana-data}

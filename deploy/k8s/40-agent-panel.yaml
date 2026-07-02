@@ -1,0 +1,177 @@
+# Панель супер-администратора платформы (ADR-0033, фаза ноль). Лёгкий FastAPI-сервис на
+# управляющем узле: разбор инцидентов и здоровье через RCA на чтение, центр инцидентов,
+# журнал аудита, детерминированный каталог команд с подтверждением мутаций. Языковой модели
+# в административном пути нет.
+#
+# БЕЗОПАСНОСТЬ. Это god-mode-поверхность, поэтому НАМЕРЕННО только ClusterIP, БЕЗ Ingress:
+# наружу панель не публикуется. Доступ оператора только через закрытый контур, например
+#   kubectl -n krokki port-forward svc/agent-panel 9109:9109
+# и затем http://127.0.0.1:9109 в браузере через WireGuard-туннель. Вход закрыт токеном
+# оператора (fail-closed), а действия пишутся в неизменяемый аудит (в stdout, откуда Alloy
+# забирает их в Loki, ADR-0032).
+#
+# ПЕРЕД ПРИМЕНЕНИЕМ:
+# 1) Секрет панели с аллоу-листом операторов (имя:токен через запятую) и общим внутренним
+#    токеном привилегированного слоя администрирования (тот же, что кладём в krokki-secrets):
+#      ADM=$(openssl rand -hex 24)
+#      kubectl -n krokki create secret generic agent-panel-secrets \
+#        --from-literal=ADMINCHAT_OPERATORS="max:$(openssl rand -hex 24)" \
+#        --from-literal=ADMIN_INTERNAL_TOKEN="$ADM"
+# 2) Тот же ADMIN_INTERNAL_TOKEN добавить в общий krokki-secrets, чтобы api смонтировал
+#    привилегированный слой /api/admin (без него слой fail-closed не поднимается):
+#      kubectl -n krokki patch secret krokki-secrets --type merge \
+#        -p "{\"stringData\":{\"ADMIN_INTERNAL_TOKEN\":\"$ADM\"}}" && kubectl -n krokki rollout restart deploy/api
+# Образ собрать и импортировать в k3s как остальные (deploy/build.sh).
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-panel
+  namespace: sentinel
+spec:
+  type: ClusterIP          # без Ingress: наружу не торчит, доступ только через туннель
+  selector: {app: agent-panel}
+  ports: [{name: http, port: 9109, targetPort: 9109}]
+---
+# Узкий сервисный аккаунт для управления инфраструктурой из панели (ADR-0033, фаза 4;
+# расширен наблюдением ADR-0038, этап 2). Права в пространстве krokki: деплойменты на чтение
+# статуса (/services) и перезапуск (rollout restart через patch аннотации), а также чтение
+# подов, логов подов и событий для статусных команд и диагностики. Секреты, конфиги и любые
+# мутации сверх patch деплойментов недоступны; запрет на перезапуск postgres/redis/vllm/stalwart
+# дополнительно зашит в коде (k8s.py, denylist).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-panel
+  namespace: sentinel
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-panel-deploy
+  namespace: sentinel
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+  # Наблюдение этапа 2 (ADR-0038): фазы и рестарты подов, хвосты логов для цитат к
+  # инцидентам, события пространства (падения, выселения). Только чтение, без watch.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list"]
+  # Этап 3 (ADR-0038, плейбук A4, действие a3): удаление больного пода в
+  # CrashLoopBackOff или после OOMKilled, контроллер пересоздаст его сам. Код панели
+  # (k8s.delete_pod) дополнительно проверяет имя по DNS-1123 и allowlist/denylist
+  # сервиса-владельца ДО обращения к API.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-panel-deploy
+  namespace: sentinel
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: agent-panel-deploy}
+subjects:
+  - {kind: ServiceAccount, name: agent-panel, namespace: sentinel}
+---
+# Узлы это кластерный ресурс, поэтому для их чтения нужна отдельная ClusterRole. Права
+# сознательно минимальны: get и list узлов (условия Ready, давления, ёмкости) и подресурсы
+# nodes/proxy и nodes/stats для сводки kubelet (/api/v1/nodes/{node}/proxy/stats/summary):
+# фактическое использование процессора, памяти и файловых систем без установки Prometheus
+# (ADR-0038, этап 2). Никаких мутаций узлов и никакого доступа к другим кластерным ресурсам.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-panel-nodes-read
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "nodes/stats"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-panel-nodes-read
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: agent-panel-nodes-read}
+subjects:
+  - {kind: ServiceAccount, name: agent-panel, namespace: sentinel}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-panel
+  namespace: sentinel
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: agent-panel}}
+  template:
+    metadata:
+      labels: {app: agent-panel}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/role: control}
+      serviceAccountName: agent-panel   # узкий RBAC на деплойменты krokki (см. Role выше)
+      # Не впрыскивать служебные ADMINCHAT_* переменные от Service (как у vllm): токен
+      # операторов приходит только из секрета, ничто не должно его перекрывать.
+      enableServiceLinks: false
+      containers:
+        - name: agent-panel
+          image: REGISTRY_PLACEHOLDER/kube-sentinel/agent-panel:0.13.5
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 9109}]
+          env:
+            # Аллоу-лист операторов (имя:токен,...): единственный источник входа, из секрета.
+            - name: ADMINCHAT_OPERATORS
+              valueFrom: {secretKeyRef: {name: agent-panel-secrets, key: ADMINCHAT_OPERATORS}}
+            - {name: RCA_URL, value: "http://rca:9107"}
+            # Привилегированный слой администрирования Go-бэкенда (фаза 1): адрес api и общий
+            # внутренний токен X-Admin-Token. Пусто означает мягкую деградацию к заглушке.
+            - {name: KROKKI_API_URL, value: "http://api:8765"}
+            - name: ADMIN_INTERNAL_TOKEN
+              valueFrom: {secretKeyRef: {name: agent-panel-secrets, key: ADMIN_INTERNAL_TOKEN}}
+            # Токен доступа к node-agent (ADR-0041): панель предъявляет его в каждом запросе
+            # выполнения команды на узле. Тот же секрет лежит и в nodeagent-secrets у DaemonSet.
+            - name: NODEAGENT_TOKEN
+              valueFrom: {secretKeyRef: {name: agent-panel-secrets, key: NODEAGENT_TOKEN}}
+            # Состояние панели на постоянном томе /data (не в /app, который только для чтения у
+            # непривилегированного пользователя): журнал аудита, состояние гардов, лента инцидентов
+            # (append-only, хранится вечно, ADR-0038) и режим агента auto|manual. Без тома состояние
+            # жило бы только в памяти и терялось при каждом рестарте.
+            - {name: ADMINCHAT_AUDIT, value: "/data/audit.log.jsonl"}
+            - {name: ADMINCHAT_GUARDS, value: "/data/agent-guards.log.jsonl"}
+            - {name: ADMINCHAT_INCIDENTS_DIR, value: "/data"}
+            - {name: ADMINCHAT_INCIDENTS, value: "/data/incidents.log.jsonl"}
+            - {name: ADMINCHAT_AGENT_MODE, value: "/data/agent-mode.txt"}
+            # Контекст Kubernetes в логи и аудит через downward API (ADR-0032, A.8).
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+          readinessProbe:
+            httpGet: {path: /health, port: 9109}
+            initialDelaySeconds: 8
+            periodSeconds: 15
+          resources:
+            requests: {cpu: "50m", memory: 96Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: state, mountPath: /data}
+      volumes:
+        - name: state
+          persistentVolumeClaim: {claimName: agent-panel-state}
+---
+# Постоянный том состояния панели: аудит, гарды, лента инцидентов (вечно) и режим агента.
+# Класс local-path k3s привязывает том к узлу; панель и так закреплена на управляющем узле
+# (nodeSelector control), поэтому привязка совпадает.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-panel-state
+  namespace: sentinel
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests: {storage: 1Gi}
