@@ -5,7 +5,7 @@
 префиксом test_)."""
 import os
 
-os.environ.setdefault("SENTINEL_RESTART_ALLOWLIST", "web,api,worker")
+os.environ.setdefault("AEGIL_RESTART_ALLOWLIST", "web,api,worker")
 
 import tempfile
 from datetime import datetime, timedelta, timezone

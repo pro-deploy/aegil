@@ -1,4 +1,4 @@
-"""Панель агента kube-sentinel: лёгкий сервис на FastAPI, отдающий одностраничный чат-интерфейс
+"""Панель агента aegil: лёгкий сервис на FastAPI, отдающий одностраничный чат-интерфейс
 автономного девопс-агента. Панель наблюдает кластер и узлы, ведёт центр инцидентов и журнал
 аудита, а любой запрос оператора на естественном языке исполняет полноценным агентным циклом
 языковой модели (agent_exec): модель сама смотрит состояние, выполняет команды на кластере и на
@@ -6,8 +6,8 @@
 объясняет по-русски. Панель наружу не публикуется (ClusterIP без Ingress), вход закрыт токеном
 оператора, доступ идёт через закрытый контур.
 
-Конфигурация продукта задаётся переменными окружения с префиксом SENTINEL_ (см. config.py и
-docs/CONVENTIONS.md). Единственный обязательный параметр самой панели это SENTINEL_OPERATORS,
+Конфигурация продукта задаётся переменными окружения с префиксом AEGIL_ (см. config.py и
+docs/CONVENTIONS.md). Единственный обязательный параметр самой панели это AEGIL_OPERATORS,
 аллоу-лист операторов вида «имя:токен,...»: без хотя бы одного оператора панель не поднимается
 (fail-closed). Если языковая модель не настроена (нет ключа или адреса), агентный цикл вырождается
 в исполнителя одиночной команды оператора без планирования.
@@ -40,7 +40,7 @@ import slo
 import updater
 
 HELP = (
-    "Панель агента kube-sentinel. Пишите запрос на естественном языке, агент сам разберётся.\n"
+    "Панель агента aegil. Пишите запрос на естественном языке, агент сам разберётся.\n"
     "Примеры: «сколько места на узлах и почисти неиспользуемые образы», «покажи упавшие поды»,\n"
     "«перезапусти сервис X», «что происходит в кластере».\n"
     "Команды: /help этот список, /status сводка кластера, /health здоровье панели,\n"
@@ -60,8 +60,8 @@ COMMAND_CATALOG = [
 ]
 
 # Ограничение частоты неудачных входов: защита от перебора токена. Простой счётчик по источнику.
-_MAX_AUTH_FAILURES = int(os.getenv("SENTINEL_AUTH_MAX_FAILURES", "10"))
-_AUTH_WINDOW_SECONDS = int(os.getenv("SENTINEL_AUTH_WINDOW_SECONDS", "300"))
+_MAX_AUTH_FAILURES = int(os.getenv("AEGIL_AUTH_MAX_FAILURES", "10"))
+_AUTH_WINDOW_SECONDS = int(os.getenv("AEGIL_AUTH_WINDOW_SECONDS", "300"))
 _auth_failures: dict = {}
 _auth_lock = threading.Lock()
 
@@ -70,7 +70,7 @@ def _load_operators() -> dict:
     """Аллоу-лист операторов: каждый входит своим токеном, действие атрибутируется ему в аудите.
     Панель fail-closed: без единого валидного оператора не поднимается, дефолтного пароля нет."""
     ops: dict = {}
-    raw = os.getenv("SENTINEL_OPERATORS", "").strip()
+    raw = os.getenv("AEGIL_OPERATORS", "").strip()
     if raw:
         for pair in raw.split(","):
             if ":" not in pair:
@@ -84,13 +84,13 @@ def _load_operators() -> dict:
 
 OPERATORS = _load_operators()
 if not OPERATORS:
-    raise RuntimeError("Задайте SENTINEL_OPERATORS (имя:токен,...): "
+    raise RuntimeError("Задайте AEGIL_OPERATORS (имя:токен,...): "
                        "панель не запускается без хотя бы одного оператора")
 RCA_URL = config.RCA_URL
 BASE_DIR = Path(__file__).parent
 INDEX_HTML = (BASE_DIR / "index.html").read_text(encoding="utf-8")
 
-app = FastAPI(title="kube-sentinel-panel")
+app = FastAPI(title="aegil-panel")
 
 
 @app.on_event("startup")
@@ -194,7 +194,7 @@ def icon() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "service": "kube-sentinel-panel"}
+    return {"status": "ok", "service": "aegil-panel"}
 
 
 def _agent_reply(result: dict) -> dict:
@@ -343,7 +343,7 @@ def ask(req: AskReq, request: Request) -> dict:
     if not msg:
         return {"answer": "Пустой вопрос."}
     if not config.LLM_MODEL:
-        return {"answer": "Модель не настроена (SENTINEL_LLM_MODEL пуст)."}
+        return {"answer": "Модель не настроена (AEGIL_LLM_MODEL пуст)."}
     # Состояние кластера собрано из логов подов, то есть из недоверенного источника: строка лога
     # может содержать инъекцию в подсказку. Заключаем контекст в ограду данных и помечаем попытки
     # инъекции, чтобы модель трактовала его как данные, а не как указания (см. injection.py).
@@ -354,7 +354,7 @@ def ask(req: AskReq, request: Request) -> dict:
         client = OpenAI(base_url=(config.LLM_BASE_URL or None),
                         api_key=(config.LLM_API_KEY or "sk-noauth"),
                         timeout=float(config.LLM_TIMEOUT))
-        system = ("Ты ассистент SRE в операторской консоли kube-sentinel. Отвечай по-русски, "
+        system = ("Ты ассистент SRE в операторской консоли aegil. Отвечай по-русски, "
                   "кратко и по делу, давай конкретные шаги и команды kubectl. Ниже актуальное "
                   "состояние кластера, опирайся на него как на данные.\n\n" + ctx)
         messages = [{"role": "system", "content": system}]

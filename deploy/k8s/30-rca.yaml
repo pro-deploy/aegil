@@ -1,13 +1,13 @@
 # Сервис детерминированного анализа RCA. CPU-only, читает окно логов из Loki и отдаёт
 # вердикт по пятиполевой схеме. Записывает размеченные примеры в Postgres и синхронизирует
 # модель маршрутизации через объектное хранилище S3. Postgres и ключи S3 задаются секретом
-# sentinel-secrets, который создаёт владелец до применения манифеста (см. README и .env.example).
+# aegil-secrets, который создаёт владелец до применения манифеста (см. README и .env.example).
 # Образ собирается и публикуется в реестр как остальные (deploy/build.sh) под единой версией.
 apiVersion: v1
 kind: Service
 metadata:
   name: rca
-  namespace: sentinel
+  namespace: aegil
 spec:
   selector: {app: rca}
   ports: [{name: http, port: 9107, targetPort: 9107}]
@@ -16,7 +16,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: rca
-  namespace: sentinel
+  namespace: aegil
 spec:
   replicas: 1
   selector: {matchLabels: {app: rca}}
@@ -27,32 +27,32 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: rca
-          image: REGISTRY_PLACEHOLDER/kube-sentinel/rca:0.1.0
+          image: REGISTRY_PLACEHOLDER/aegil/rca:0.1.0
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 9107}]
           env:
             # Наблюдаемое пространство имён из downward API: селектор потоков Loki строится
             # вокруг него, без зашитого имени исходной платформы.
-            - name: SENTINEL_NAMESPACE
+            - name: AEGIL_NAMESPACE
               valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
-            - {name: SENTINEL_LOKI_URL, value: "http://loki:3100"}
+            - {name: AEGIL_LOKI_URL, value: "http://loki:3100"}
             # Селектор потоков без зашитого имени: логи наблюдаемого пространства имён.
-            - {name: SENTINEL_LOKI_QUERY, value: '{namespace="$(SENTINEL_NAMESPACE)"}'}
+            - {name: AEGIL_LOKI_QUERY, value: '{namespace="$(AEGIL_NAMESPACE)"}'}
             # Postgres для размеченных примеров и S3 для синхронизации модели маршрутизации.
-            - name: SENTINEL_POSTGRES_DSN
-              valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_POSTGRES_DSN}}
-            - name: SENTINEL_S3_ENDPOINT
-              valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_S3_ENDPOINT}}
-            - name: SENTINEL_S3_ACCESS_KEY
-              valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_S3_ACCESS_KEY}}
-            - name: SENTINEL_S3_SECRET_KEY
-              valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_S3_SECRET_KEY}}
-            - name: SENTINEL_S3_BUCKET
-              valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_S3_BUCKET}}
+            - name: AEGIL_POSTGRES_DSN
+              valueFrom: {secretKeyRef: {name: aegil-secrets, key: AEGIL_POSTGRES_DSN}}
+            - name: AEGIL_S3_ENDPOINT
+              valueFrom: {secretKeyRef: {name: aegil-secrets, key: AEGIL_S3_ENDPOINT}}
+            - name: AEGIL_S3_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: aegil-secrets, key: AEGIL_S3_ACCESS_KEY}}
+            - name: AEGIL_S3_SECRET_KEY
+              valueFrom: {secretKeyRef: {name: aegil-secrets, key: AEGIL_S3_SECRET_KEY}}
+            - name: AEGIL_S3_BUCKET
+              valueFrom: {secretKeyRef: {name: aegil-secrets, key: AEGIL_S3_BUCKET}}
             # Каталог обученной модели (эфемерный, ресинк из S3 при старте и /reload-model) и
             # ключ модели в бакете.
-            - {name: SENTINEL_SETFIT_DIR, value: "/tmp/setfit-router"}
-            - {name: SENTINEL_MODEL_KEY_PREFIX, value: "rca/setfit-router.tar.gz"}
+            - {name: AEGIL_SETFIT_DIR, value: "/tmp/setfit-router"}
+            - {name: AEGIL_MODEL_KEY_PREFIX, value: "rca/setfit-router.tar.gz"}
             # Контекст Kubernetes в логи через downward API.
             - name: POD_NAME
               valueFrom: {fieldRef: {fieldPath: metadata.name}}
@@ -78,7 +78,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: rca
-  namespace: sentinel
+  namespace: aegil
 spec:
   podSelector: {matchLabels: {app: rca}}
   policyTypes: [Ingress]

@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0e1417">
-<title>kube-sentinel</title>
+<title>Aegil</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg">
 <link rel="apple-touch-icon" href="/icon.svg">
@@ -214,7 +214,7 @@ main{flex:1;padding:4px 16px calc(env(safe-area-inset-bottom) + 120px)}
 <div id="gate">
   <div class="card">
     <div class="logo">🛡️</div>
-    <h1>kube-sentinel</h1>
+    <h1>Aegil</h1>
     <p>Автономный SRE-агент. Войдите токеном оператора.</p>
     <input id="tok" type="password" inputmode="text" autocomplete="off" placeholder="Токен оператора">
     <button id="enter">Войти</button>
@@ -224,7 +224,7 @@ main{flex:1;padding:4px 16px calc(env(safe-area-inset-bottom) + 120px)}
 
 <div id="app">
   <div class="appbar">
-    <span class="brand"><span class="dot" id="hdot"></span>kube-sentinel</span>
+    <span class="brand"><span class="dot" id="hdot"></span>Aegil</span>
     <span class="sp"></span>
     <button class="iconbtn" id="gear">⚙️</button>
   </div>
@@ -308,14 +308,14 @@ main{flex:1;padding:4px 16px calc(env(safe-area-inset-bottom) + 120px)}
 
 <script>
 const $=s=>document.querySelector(s);
-let TOKEN=localStorage.getItem('sentinel_token')||'';
+let TOKEN=localStorage.getItem('aegil_token')||'';
 const history=[];
 
 /* тема */
 function applyTheme(t){const eff=(t==='auto'||!t)?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):t;
   document.documentElement.setAttribute('data-theme',eff);
   document.querySelector('meta[name=theme-color]').content=eff==='dark'?'#0e1417':'#f8f9fb';}
-applyTheme(localStorage.getItem('sentinel_theme')||'auto');
+applyTheme(localStorage.getItem('aegil_theme')||'auto');
 
 async function api(path,opts){opts=opts||{};const h=opts.headers||{};h['authorization']='Bearer '+TOKEN;
   if(opts.body)h['content-type']='application/json';
@@ -328,9 +328,9 @@ $('#enter').onclick=tryLogin; $('#tok').addEventListener('keydown',e=>{if(e.key=
 async function tryLogin(){const t=$('#tok').value.trim();if(!t)return;TOKEN=t;
   try{const r=await fetch('/agent/state',{headers:{'authorization':'Bearer '+t}});
     if(r.status===401){$('#gerr').textContent='Неверный токен';return;}
-    localStorage.setItem('sentinel_token',t);boot();}
+    localStorage.setItem('aegil_token',t);boot();}
   catch(e){$('#gerr').textContent='Панель недоступна';}}
-function logout(){localStorage.removeItem('sentinel_token');TOKEN='';location.reload();}
+function logout(){localStorage.removeItem('aegil_token');TOKEN='';location.reload();}
 $('#logout').onclick=logout;
 
 function boot(){$('#gate').style.display='none';$('#app').style.display='flex';
@@ -483,19 +483,19 @@ $('#gear').onclick=()=>openSheet('settingsheet');
 /* сегменты настроек */
 function syncSegs(){const m=lastState.mode||lastState.autonomy||'observe';
   document.querySelectorAll('#modeseg button').forEach(b=>b.classList.toggle('on',b.dataset.mode===m));
-  const th=localStorage.getItem('sentinel_theme')||'auto';
+  const th=localStorage.getItem('aegil_theme')||'auto';
   document.querySelectorAll('#themeseg button').forEach(b=>b.classList.toggle('on',b.dataset.theme===th));}
 document.querySelectorAll('#modeseg button').forEach(b=>b.onclick=async()=>{
   try{await api('/agent/mode',{method:'POST',body:{mode:b.dataset.mode}});toast('автономия: '+b.dataset.mode);
     lastState.mode=b.dataset.mode;syncSegs();}catch(e){toast('ошибка');}});
 document.querySelectorAll('#themeseg button').forEach(b=>b.onclick=()=>{
-  localStorage.setItem('sentinel_theme',b.dataset.theme);applyTheme(b.dataset.theme);syncSegs();});
+  localStorage.setItem('aegil_theme',b.dataset.theme);applyTheme(b.dataset.theme);syncSegs();});
 
 function toast(t){const el=document.createElement('div');el.className='toast';el.textContent=t;
   $('#toasts').appendChild(el);setTimeout(()=>el.remove(),3000);}
 
 if(TOKEN){fetch('/agent/state',{headers:{'authorization':'Bearer '+TOKEN}}).then(r=>{
-  if(r.ok)boot();else localStorage.removeItem('sentinel_token');}).catch(()=>{});}
+  if(r.ok)boot();else localStorage.removeItem('aegil_token');}).catch(()=>{});}
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
 </body>

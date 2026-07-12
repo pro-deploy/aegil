@@ -1,4 +1,4 @@
-"""Модульные тесты примитива аудита операций панели kube-sentinel.
+"""Модульные тесты примитива аудита операций панели aegil.
 
 Собираемый pytest-вид (функции с префиксом test_), без сети. Запуск:
     cd services/agent-panel && python3 -m pytest -q test_audit.py
@@ -104,7 +104,7 @@ def test_written_to_file_and_stdout(capsys):
 def test_file_error_signalled_not_swallowed(capsys, monkeypatch):
     """Ошибка файловой записи не глотается молча: сигнал уходит в stderr, но запрос не роняется,
     так как долговечная копия уже в stdout."""
-    audit.AUDIT_PATH = Path("/proc/nonexistent-kube-sentinel/audit.log.jsonl")
+    audit.AUDIT_PATH = Path("/proc/nonexistent-aegil/audit.log.jsonl")
     # Запрос не должен упасть.
     rec = audit.audit_write("max", "restart", {}, "INC-1", confirmed=True, result="ok")
     captured = capsys.readouterr()
@@ -119,14 +119,14 @@ def test_file_error_signalled_not_swallowed(capsys, monkeypatch):
 def test_audit_path_outside_worktree(monkeypatch):
     """Путь журнала по умолчанию лежит в каталоге данных вне рабочего дерева агента, иначе агент
     мог бы удалить собственный аудит как безопасно удаляемый файл."""
-    monkeypatch.delenv("SENTINEL_AUDIT", raising=False)
-    monkeypatch.setenv("SENTINEL_STATE_DIR", "/data")
+    monkeypatch.delenv("AEGIL_AUDIT", raising=False)
+    monkeypatch.setenv("AEGIL_STATE_DIR", "/data")
     path = audit._default_audit_path()
     _eq("путь в каталоге данных", str(path), "/data/audit.log.jsonl")
     module_dir = str(Path(audit.__file__).resolve().parent)
     assert not str(path).startswith(module_dir), \
         f"журнал аудита внутри рабочего дерева: {path}"
-    monkeypatch.setenv("SENTINEL_AUDIT", "/data/custom-audit.jsonl")
+    monkeypatch.setenv("AEGIL_AUDIT", "/data/custom-audit.jsonl")
     _eq("явный путь", str(audit._default_audit_path()), "/data/custom-audit.jsonl")
 
 

@@ -44,8 +44,8 @@ SERVICE_FIELDS = ("service", "app", "app_kubernetes_io_name", "component") + CON
 # удалённые узлы) порождают неограниченное число уникальных значений, поэтому статистику
 # латентности собираем лишь по ограниченному числу самых нагруженных целей, а остальные
 # сворачиваем в служебную корзину «__other__». Порог настраивается окружением.
-MAX_LATENCY_TARGETS = int(os.getenv("SENTINEL_RCA_MAX_LATENCY_TARGETS", "50"))
-TOP_TEMPLATES = int(os.getenv("SENTINEL_RCA_TOP_TEMPLATES", "10"))
+MAX_LATENCY_TARGETS = int(os.getenv("AEGIL_RCA_MAX_LATENCY_TARGETS", "50"))
+TOP_TEMPLATES = int(os.getenv("AEGIL_RCA_TOP_TEMPLATES", "10"))
 
 
 def _first(rec: dict, fields) -> str:

@@ -20,7 +20,7 @@ def client():
 def test_app_title_is_domain_agnostic():
     # Наследный брендинг убран: заголовок продукта нейтральный.
     assert "krokki" not in appmod.app.title.lower()
-    assert appmod.app.title == "kube-sentinel-rca"
+    assert appmod.app.title == "aegil-rca"
 
 
 def test_no_stuck_endpoint(client):
@@ -148,7 +148,7 @@ def test_outcomes_stats_endpoint(client, monkeypatch):
     assert r.json() == {"total": 3, "resolved": 2, "failed": 1, "available": True}
 
 
-def test_env_prefix_is_sentinel():
-    # Конфигурация под единым префиксом SENTINEL_: наследные беспрефиксные имена убраны.
+def test_env_prefix_is_aegil():
+    # Конфигурация под единым префиксом AEGIL_: наследные беспрефиксные имена убраны.
     import loki
-    assert loki.LOKI_URL == loki.os.getenv("SENTINEL_LOKI_URL", "http://loki:3100").rstrip("/")
+    assert loki.LOKI_URL == loki.os.getenv("AEGIL_LOKI_URL", "http://loki:3100").rstrip("/")

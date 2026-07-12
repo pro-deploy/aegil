@@ -1,4 +1,4 @@
-"""Модульные тесты детерминированных гардов автономного агента kube-sentinel.
+"""Модульные тесты детерминированных гардов автономного агента aegil.
 
 Собираемый pytest-вид (функции с префиксом test_), без сети. Запуск:
     cd services/agent-panel && python3 -m pytest -q test_guards.py
@@ -177,21 +177,21 @@ def test_persistence():
 def test_state_path_outside_worktree(monkeypatch):
     """Путь состояния по умолчанию лежит в каталоге данных вне рабочего дерева агента, а не
     внутри каталога модуля, иначе агент мог бы стереть собственные гарды как чистку путей."""
-    monkeypatch.delenv("SENTINEL_GUARDS", raising=False)
-    monkeypatch.setenv("SENTINEL_STATE_DIR", "/data")
+    monkeypatch.delenv("AEGIL_GUARDS", raising=False)
+    monkeypatch.setenv("AEGIL_STATE_DIR", "/data")
     path = guards._default_state_path()
     _eq("путь в каталоге данных", str(path), "/data/agent-guards.log.jsonl")
     module_dir = str(Path(guards.__file__).resolve().parent)
     assert not str(path).startswith(module_dir), \
         f"журнал гардов внутри рабочего дерева: {path}"
-    # Явный SENTINEL_GUARDS имеет приоритет.
-    monkeypatch.setenv("SENTINEL_GUARDS", "/data/custom-guards.jsonl")
+    # Явный AEGIL_GUARDS имеет приоритет.
+    monkeypatch.setenv("AEGIL_GUARDS", "/data/custom-guards.jsonl")
     _eq("явный путь", str(guards._default_state_path()), "/data/custom-guards.jsonl")
 
 
 def test_state_dir_failsafe(monkeypatch):
     """При недоступном каталоге данных запись откатывается на временный каталог, не роняя агента."""
-    unwritable = "/proc/nonexistent-kube-sentinel/state"
+    unwritable = "/proc/nonexistent-aegil/state"
     guards.STATE_PATH = Path(unwritable) / "agent-guards.log.jsonl"
     guards.load()
     # Запись должна пройти без исключения, путь откатится на временный каталог.

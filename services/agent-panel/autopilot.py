@@ -1,4 +1,4 @@
-"""Автономный цикл SRE-агента kube-sentinel: наблюдение, диагноз, ремонт, проверка результата.
+"""Автономный цикл SRE-агента aegil: наблюдение, диагноз, ремонт, проверка результата.
 
 Модуль называется autopilot, потому что имя agent занято другим слоем. Разделение ответственности:
 факты и пороги считает детерминированный универсальный каталог симптомов (alerts.py), ограничители
@@ -37,9 +37,9 @@ import outcomes
 import rca_client
 from audit import audit_write
 
-# Такт наблюдения и задержка проверки результата (переменные окружения SENTINEL_).
-TICK_SECONDS = int(os.getenv("SENTINEL_TICK_SECONDS", "30"))
-VERIFY_DELAY = int(os.getenv("SENTINEL_VERIFY_DELAY", "180"))
+# Такт наблюдения и задержка проверки результата (переменные окружения AEGIL_).
+TICK_SECONDS = int(os.getenv("AEGIL_TICK_SECONDS", "30"))
+VERIFY_DELAY = int(os.getenv("AEGIL_VERIFY_DELAY", "180"))
 
 # Отложенные проверки результата: списки словарей {fp, code, gid, due}.
 _pending_verify: list = []

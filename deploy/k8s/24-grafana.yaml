@@ -2,15 +2,15 @@
 # из строки лога переход в трассу и обратно. Источники провижинятся автоматически.
 # Логин и пароль администратора берутся из секрета grafana-admin, создайте его до
 # применения манифеста:
-#   kubectl -n sentinel create secret generic grafana-admin \
+#   kubectl -n aegil create secret generic grafana-admin \
 #     --from-literal=user=admin --from-literal=password=$(openssl rand -hex 24)
 # Доступ только через port-forward, наружу Grafana не публикуется:
-#   kubectl -n sentinel port-forward svc/grafana 3000:3000
+#   kubectl -n aegil port-forward svc/grafana 3000:3000
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: grafana-datasources
-  namespace: sentinel
+  namespace: aegil
 data:
   datasources.yaml: |
     apiVersion: 1
@@ -42,7 +42,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: grafana
-  namespace: sentinel
+  namespace: aegil
 spec:
   selector: {app: grafana}
   ports: [{name: http, port: 3000, targetPort: 3000}]
@@ -51,7 +51,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: grafana-data
-  namespace: sentinel
+  namespace: aegil
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -62,7 +62,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: grafana
-  namespace: sentinel
+  namespace: aegil
 spec:
   replicas: 1
   strategy: {type: Recreate}

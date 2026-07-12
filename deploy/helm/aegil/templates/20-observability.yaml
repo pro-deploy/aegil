@@ -1,6 +1,6 @@
 {{- if .Values.observability.enabled }}
-{{- $ns := include "kube-sentinel.namespace" . -}}
-{{- $target := include "kube-sentinel.targetNamespace" . -}}
+{{- $ns := include "aegil.namespace" . -}}
+{{- $target := include "aegil.targetNamespace" . -}}
 {{- $obs := .Values.observability -}}
 {{- /* Общее размещение подов стека наблюдаемости. */ -}}
 {{- if $obs.loki.enabled }}
@@ -11,7 +11,7 @@ metadata:
   name: loki-config
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 data:
   loki.yaml: |
     auth_enabled: false
@@ -58,7 +58,7 @@ metadata:
   name: loki
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   selector: {app: loki}
   ports: [{name: http, port: 3100, targetPort: 3100}]
@@ -69,7 +69,7 @@ metadata:
   name: loki-data
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   accessModes: [ReadWriteOnce]
   {{- if $obs.loki.storageClass }}
@@ -84,7 +84,7 @@ metadata:
   name: loki
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   replicas: 1
   strategy: {type: Recreate}
@@ -95,7 +95,7 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext: {fsGroup: 10001}
-{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+{{- include "aegil.imagePullSecrets" . | indent 6 }}
       {{- with $obs.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}
@@ -139,7 +139,7 @@ metadata:
   name: loki
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   podSelector: {matchLabels: {app: loki}}
   policyTypes: [Ingress]
@@ -161,14 +161,14 @@ metadata:
   name: alloy
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: {{ $ns }}-alloy
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 rules:
   - apiGroups: [""]
     resources: [pods, pods/log, namespaces, nodes]
@@ -179,7 +179,7 @@ kind: ClusterRoleBinding
 metadata:
   name: {{ $ns }}-alloy
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -195,7 +195,7 @@ metadata:
   name: alloy-config
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 data:
   config.alloy: |
     discovery.kubernetes "pods" {
@@ -258,7 +258,7 @@ metadata:
   name: alloy
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   replicas: 1
   strategy: {type: Recreate}
@@ -268,7 +268,7 @@ spec:
       labels: {app: alloy}
     spec:
       serviceAccountName: alloy
-{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+{{- include "aegil.imagePullSecrets" . | indent 6 }}
       {{- with $obs.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}
@@ -318,7 +318,7 @@ metadata:
   name: tempo-config
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 data:
   tempo.yaml: |
     server:
@@ -352,7 +352,7 @@ metadata:
   name: tempo
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   selector: {app: tempo}
   ports:
@@ -366,7 +366,7 @@ metadata:
   name: tempo-data
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   accessModes: [ReadWriteOnce]
   {{- if $obs.tempo.storageClass }}
@@ -381,7 +381,7 @@ metadata:
   name: tempo
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   replicas: 1
   strategy: {type: Recreate}
@@ -392,7 +392,7 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext: {fsGroup: 10001}
-{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+{{- include "aegil.imagePullSecrets" . | indent 6 }}
       {{- with $obs.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}
@@ -441,7 +441,7 @@ metadata:
   name: otel-collector-config
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 data:
   config.yaml: |
     receivers:
@@ -482,7 +482,7 @@ metadata:
   name: otel-collector
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   selector: {app: otel-collector}
   ports:
@@ -495,7 +495,7 @@ metadata:
   name: otel-collector
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   replicas: 1
   selector: {matchLabels: {app: otel-collector}}
@@ -504,7 +504,7 @@ spec:
       labels: {app: otel-collector}
     spec:
       automountServiceAccountToken: false
-{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+{{- include "aegil.imagePullSecrets" . | indent 6 }}
       {{- with $obs.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}
@@ -550,7 +550,7 @@ metadata:
   name: grafana-datasources
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 data:
   datasources.yaml: |
     apiVersion: 1
@@ -584,7 +584,7 @@ metadata:
   name: grafana
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   selector: {app: grafana}
   ports: [{name: http, port: 3000, targetPort: 3000}]
@@ -595,7 +595,7 @@ metadata:
   name: grafana-data
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   accessModes: [ReadWriteOnce]
   {{- if $obs.grafana.storageClass }}
@@ -610,7 +610,7 @@ metadata:
   name: grafana
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   replicas: 1
   strategy: {type: Recreate}
@@ -621,7 +621,7 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext: {fsGroup: 472}
-{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+{{- include "aegil.imagePullSecrets" . | indent 6 }}
       {{- with $obs.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}

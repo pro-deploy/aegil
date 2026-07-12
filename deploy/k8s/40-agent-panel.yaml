@@ -1,32 +1,32 @@
-# Панель агента kube-sentinel. Лёгкий FastAPI-сервис: разбор инцидентов и здоровье через RCA
+# Панель агента aegil. Лёгкий FastAPI-сервис: разбор инцидентов и здоровье через RCA
 # на чтение, центр инцидентов, журнал аудита, детерминированный каталог команд с подтверждением
 # мутаций и агентный цикл на языковой модели с настраиваемым уровнем автономии.
 #
 # БЕЗОПАСНОСТЬ. Это god-mode-поверхность, поэтому НАМЕРЕННО только ClusterIP, БЕЗ Ingress:
 # наружу панель не публикуется. Доступ оператора только через закрытый контур, например
-#   kubectl -n sentinel port-forward svc/agent-panel 9109:9109
+#   kubectl -n aegil port-forward svc/agent-panel 9109:9109
 # и затем http://127.0.0.1:9109 в браузере. Вход закрыт токеном оператора (fail-closed), а
 # действия пишутся в неизменяемый аудит (в stdout, откуда Alloy забирает их в Loki).
 #
 # ПЕРЕД ПРИМЕНЕНИЕМ создать секрет панели с аллоу-листом операторов «имя:токен через запятую»,
 # токеном доступа к node-agent (тот же, что в секрете node-agent), ключом языковой модели и
 # параметрами Postgres и S3 (общими с RCA). Имена и ключи секрета согласованы с README и .env.example:
-#   kubectl -n sentinel create secret generic sentinel-secrets \
-#     --from-literal=SENTINEL_OPERATORS="admin:$(openssl rand -hex 24)" \
-#     --from-literal=SENTINEL_NODEAGENT_TOKEN="$(openssl rand -hex 24)" \
-#     --from-literal=SENTINEL_LLM_API_KEY="..." \
-#     --from-literal=SENTINEL_POSTGRES_DSN="postgresql://..." \
-#     --from-literal=SENTINEL_S3_ENDPOINT="https://..." \
-#     --from-literal=SENTINEL_S3_ACCESS_KEY="..." \
-#     --from-literal=SENTINEL_S3_SECRET_KEY="..." \
-#     --from-literal=SENTINEL_S3_BUCKET="sentinel"
-# Тот же SENTINEL_NODEAGENT_TOKEN должен лежать и в секрете node-agent (см. 50-node-agent.yaml).
+#   kubectl -n aegil create secret generic aegil-secrets \
+#     --from-literal=AEGIL_OPERATORS="admin:$(openssl rand -hex 24)" \
+#     --from-literal=AEGIL_NODEAGENT_TOKEN="$(openssl rand -hex 24)" \
+#     --from-literal=AEGIL_LLM_API_KEY="..." \
+#     --from-literal=AEGIL_POSTGRES_DSN="postgresql://..." \
+#     --from-literal=AEGIL_S3_ENDPOINT="https://..." \
+#     --from-literal=AEGIL_S3_ACCESS_KEY="..." \
+#     --from-literal=AEGIL_S3_SECRET_KEY="..." \
+#     --from-literal=AEGIL_S3_BUCKET="aegil"
+# Тот же AEGIL_NODEAGENT_TOKEN должен лежать и в секрете node-agent (см. 50-node-agent.yaml).
 # Образ собрать и опубликовать в реестр как остальные (deploy/build.sh).
 apiVersion: v1
 kind: Service
 metadata:
   name: agent-panel
-  namespace: sentinel
+  namespace: aegil
 spec:
   type: ClusterIP          # без Ingress: наружу не торчит, доступ только через туннель
   selector: {app: agent-panel}
@@ -36,18 +36,18 @@ spec:
 # пространстве имён: деплойменты на чтение статуса (/services) и перезапуск (rollout restart
 # через patch аннотации), а также чтение подов, логов подов и событий для статусных команд и
 # диагностики. Секреты, конфиги и любые мутации сверх patch деплойментов недоступны; запрет на
-# перезапуск хранилищ дополнительно зашит в коде через denylist (SENTINEL_RESTART_DENYLIST).
+# перезапуск хранилищ дополнительно зашит в коде через denylist (AEGIL_RESTART_DENYLIST).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: agent-panel
-  namespace: sentinel
+  namespace: aegil
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: agent-panel-deploy
-  namespace: sentinel
+  namespace: aegil
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -68,10 +68,10 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: agent-panel-deploy
-  namespace: sentinel
+  namespace: aegil
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: agent-panel-deploy}
 subjects:
-  - {kind: ServiceAccount, name: agent-panel, namespace: sentinel}
+  - {kind: ServiceAccount, name: agent-panel, namespace: aegil}
 ---
 # Узлы это кластерный ресурс, поэтому для их чтения нужна отдельная ClusterRole. Права
 # сознательно минимальны: get и list узлов (условия Ready, давления, ёмкости) и подресурсы
@@ -93,13 +93,13 @@ metadata:
   name: agent-panel-nodes-read
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: agent-panel-nodes-read}
 subjects:
-  - {kind: ServiceAccount, name: agent-panel, namespace: sentinel}
+  - {kind: ServiceAccount, name: agent-panel, namespace: aegil}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agent-panel
-  namespace: sentinel
+  namespace: aegil
 spec:
   replicas: 1
   selector: {matchLabels: {app: agent-panel}}
@@ -113,67 +113,67 @@ spec:
       enableServiceLinks: false
       containers:
         - name: agent-panel
-          image: REGISTRY_PLACEHOLDER/kube-sentinel/agent-panel:0.1.0
+          image: REGISTRY_PLACEHOLDER/aegil/agent-panel:0.1.0
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 9109}]
           env:
             # Аллоу-лист операторов «имя:токен,...»: единственный источник входа, из секрета.
-            - name: SENTINEL_OPERATORS
-              valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_OPERATORS}}
+            - name: AEGIL_OPERATORS
+              valueFrom: {secretKeyRef: {name: aegil-secrets, key: AEGIL_OPERATORS}}
             # Наблюдаемое и управляемое пространство имён из downward API.
-            - name: SENTINEL_NAMESPACE
+            - name: AEGIL_NAMESPACE
               valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
             # Сервис детерминированного разбора первопричин внутри кластера.
-            - {name: SENTINEL_RCA_URL, value: "http://rca:9107"}
+            - {name: AEGIL_RCA_URL, value: "http://rca:9107"}
             # Языковая модель агентного цикла. Провайдер и модель задаются значениями, ключ из
-            # секрета. SENTINEL_LLM_BASE_URL пуст для облачной модели; задаётся для своей модели
+            # секрета. AEGIL_LLM_BASE_URL пуст для облачной модели; задаётся для своей модели
             # в кластере (vLLM, Ollama или совместимый прокси). Пустой ключ означает, что агентный
             # цикл выключен и панель работает как исполнитель одиночных команд оператора.
-            - {name: SENTINEL_LLM_PROVIDER, value: "anthropic"}
-            - {name: SENTINEL_LLM_MODEL, value: "claude-opus-4-8"}
-            - name: SENTINEL_LLM_API_KEY
-              valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_LLM_API_KEY, optional: true}}
-            - {name: SENTINEL_LLM_BASE_URL, value: ""}
+            - {name: AEGIL_LLM_PROVIDER, value: "anthropic"}
+            - {name: AEGIL_LLM_MODEL, value: "claude-opus-4-8"}
+            - name: AEGIL_LLM_API_KEY
+              valueFrom: {secretKeyRef: {name: aegil-secrets, key: AEGIL_LLM_API_KEY, optional: true}}
+            - {name: AEGIL_LLM_BASE_URL, value: ""}
             # Уровень автономии: observe (сухой прогон, по умолчанию), safe_repair, full. Меняется
             # владельцем; на незнакомом кластере остаётся observe до проверки решений агента.
-            - {name: SENTINEL_AUTONOMY, value: "observe"}
+            - {name: AEGIL_AUTONOMY, value: "observe"}
             # Списки сервисов для автономного перезапуска и запрета. Пусто в allowlist означает,
             # что автономный перезапуск выключен, пока владелец не перечислит свои сервисы.
-            - {name: SENTINEL_RESTART_ALLOWLIST, value: ""}
-            - {name: SENTINEL_RESTART_DENYLIST, value: "postgres,redis,minio,etcd,vault"}
+            - {name: AEGIL_RESTART_ALLOWLIST, value: ""}
+            - {name: AEGIL_RESTART_DENYLIST, value: "postgres,redis,minio,etcd,vault"}
             # Защищаемые ресурсы и пути: действия над ними всегда требуют подтверждения оператора
             # независимо от уровня автономии. По умолчанию пусто, вносит владелец.
-            - {name: SENTINEL_PROTECTED_PATTERNS, value: ""}
+            - {name: AEGIL_PROTECTED_PATTERNS, value: ""}
             # Метка роли узла для дружеских имён. Если метки нет, агент оперирует именами узлов как есть.
-            - {name: SENTINEL_NODE_ROLE_LABEL, value: "node-role.kubernetes.io/role"}
+            - {name: AEGIL_NODE_ROLE_LABEL, value: "node-role.kubernetes.io/role"}
             # Токен доступа к node-agent: панель предъявляет его в каждом запросе выполнения команды
             # на узле. Тот же секрет лежит и в секрете node-agent у DaemonSet.
-            - name: SENTINEL_NODEAGENT_TOKEN
-              valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_NODEAGENT_TOKEN}}
+            - name: AEGIL_NODEAGENT_TOKEN
+              valueFrom: {secretKeyRef: {name: aegil-secrets, key: AEGIL_NODEAGENT_TOKEN}}
             # Наблюдаемость для карточек инцидентов: чтение окна логов из Loki.
-            - {name: SENTINEL_LOKI_URL, value: "http://loki:3100"}
-            - {name: SENTINEL_LOKI_QUERY, value: '{namespace="$(SENTINEL_NAMESPACE)"}'}
-            - {name: SENTINEL_GRAFANA_URL, value: "http://grafana:3000"}
+            - {name: AEGIL_LOKI_URL, value: "http://loki:3100"}
+            - {name: AEGIL_LOKI_QUERY, value: '{namespace="$(AEGIL_NAMESPACE)"}'}
+            - {name: AEGIL_GRAFANA_URL, value: "http://grafana:3000"}
             # Состояние панели на постоянном томе /data (журнал аудита, состояние гардов, лента
             # инцидентов append-only, режим агента). Без тома состояние жило бы только в памяти и
             # терялось при каждом рестарте.
-            - {name: SENTINEL_AUDIT, value: "/data/audit.log.jsonl"}
-            - {name: SENTINEL_GUARDS, value: "/data/agent-guards.log.jsonl"}
-            - {name: SENTINEL_INCIDENTS_DIR, value: "/data"}
-            - {name: SENTINEL_INCIDENTS, value: "/data/incidents.log.jsonl"}
+            - {name: AEGIL_AUDIT, value: "/data/audit.log.jsonl"}
+            - {name: AEGIL_GUARDS, value: "/data/agent-guards.log.jsonl"}
+            - {name: AEGIL_INCIDENTS_DIR, value: "/data"}
+            - {name: AEGIL_INCIDENTS, value: "/data/incidents.log.jsonl"}
             # Каталог состояния: под ним лежат аудит, гарды, инциденты, отложенные подтверждения,
             # уровень автономии и журнал исходов ремонтов. Один постоянный том вне рабочего дерева.
-            - {name: SENTINEL_STATE_DIR, value: "/data"}
+            - {name: AEGIL_STATE_DIR, value: "/data"}
             # Открытые серверы MCP как дополнительные инструменты агента (наблюдаемость). JSON-список
             # {name,url,read_only,token}; пусто означает, что MCP выключен. Помечайте read_only только
             # читающие серверы: их инструменты агент вызывает свободно, прочие требуют подтверждения.
-            - {name: SENTINEL_MCP_SERVERS, value: ""}
+            - {name: AEGIL_MCP_SERVERS, value: ""}
             # Канал самообновления продукта. Адрес отдаёт JSON выпуска {version,image_tag,notes};
             # список деплойментов перечисляет, что обновлять. Оба пусты по умолчанию: самообновление
             # выключено. Применение обновления всегда требует подтверждения владельца.
-            - {name: SENTINEL_VERSION, value: "0.1.0"}
-            - {name: SENTINEL_UPDATE_CHANNEL_URL, value: ""}
-            - {name: SENTINEL_UPDATE_DEPLOYMENTS, value: ""}
+            - {name: AEGIL_VERSION, value: "0.1.0"}
+            - {name: AEGIL_UPDATE_CHANNEL_URL, value: ""}
+            - {name: AEGIL_UPDATE_DEPLOYMENTS, value: ""}
             # Контекст Kubernetes в логи и аудит через downward API.
             - name: POD_NAME
               valueFrom: {fieldRef: {fieldPath: metadata.name}}
@@ -203,7 +203,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: agent-panel-state
-  namespace: sentinel
+  namespace: aegil
 spec:
   accessModes: ["ReadWriteOnce"]
   resources:
@@ -218,7 +218,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: agent-panel
-  namespace: sentinel
+  namespace: aegil
 spec:
   podSelector: {matchLabels: {app: agent-panel}}
   policyTypes: [Ingress]

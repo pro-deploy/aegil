@@ -1,7 +1,7 @@
 """Тесты модуля записи исходов ремонтов outcomes. Собираемый вид pytest, без сети.
 
 Клиент сервиса разбора первопричин подменяется подделкой через monkeypatch, каталог локального
-журнала переводится во временную папку переменной SENTINEL_STATE_DIR, поэтому проверки идут офлайн
+журнала переводится во временную папку переменной AEGIL_STATE_DIR, поэтому проверки идут офлайн
 и не трогают постоянный том. Проверяется, что разрешённый инцидент оставляет оба следа: строку
 локального журнала формата JSON и push в сервис разбора первопричин.
 
@@ -18,7 +18,7 @@ import outcomes
 def journal_dir(tmp_path, monkeypatch):
     # Каталог состояния во временную папку: journal_path вычисляется при каждом вызове, поэтому
     # переопределение переменной вступает в силу немедленно.
-    monkeypatch.setenv("SENTINEL_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AEGIL_STATE_DIR", str(tmp_path))
     return tmp_path
 
 
@@ -111,7 +111,7 @@ def test_journal_falls_back_on_unwritable_dir(captured_push, monkeypatch, tmp_pa
     # stderr, вызывающий не падает.
     import tempfile
 
-    monkeypatch.setenv("SENTINEL_STATE_DIR", "/proc/nonexistent/kube-sentinel-outcomes")
+    monkeypatch.setenv("AEGIL_STATE_DIR", "/proc/nonexistent/aegil-outcomes")
     monkeypatch.setattr(outcomes.config, "RCA_URL", "http://rca:9107")
     fallback = tmp_path / "fallback"
     fallback.mkdir()

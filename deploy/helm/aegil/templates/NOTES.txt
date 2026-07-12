@@ -1,6 +1,6 @@
-kube-sentinel {{ .Chart.AppVersion }} установлен в пространство {{ include "kube-sentinel.namespace" . }}.
+aegil {{ .Chart.AppVersion }} установлен в пространство {{ include "aegil.namespace" . }}.
 
-Наблюдаемое пространство имён: {{ include "kube-sentinel.targetNamespace" . }}.
+Наблюдаемое пространство имён: {{ include "aegil.targetNamespace" . }}.
 Уровень автономии: {{ .Values.autonomy }} (observe означает сухой прогон без автономных действий).
 
 Перед использованием убедитесь, что созданы секреты (чарт их НЕ создаёт):
@@ -12,7 +12,7 @@ kube-sentinel {{ .Chart.AppVersion }} установлен в пространс
 {{- end }}
 
 Доступ к панели агента (наружу не публикуется, только через туннель):
-  kubectl -n {{ include "kube-sentinel.namespace" . }} port-forward svc/agent-panel 9109:9109
+  kubectl -n {{ include "aegil.namespace" . }} port-forward svc/agent-panel 9109:9109
   затем http://127.0.0.1:9109
 
 {{- if not .Values.nodeAgent.enabled }}

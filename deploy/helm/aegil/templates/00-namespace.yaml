@@ -4,7 +4,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ include "kube-sentinel.namespace" . }}
+  name: {{ include "aegil.namespace" . }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 {{- end }}

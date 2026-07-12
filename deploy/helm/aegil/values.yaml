@@ -1,7 +1,7 @@
-# Значения чарта kube-sentinel. Параметризует всё, что перечислено в docs/CONVENTIONS.md:
+# Значения чарта aegil. Параметризует всё, что перечислено в docs/CONVENTIONS.md:
 # реестр и единую версию образов, пространство установки и целевое наблюдаемое пространство
 # отдельно, размещение подов по компонентам, класс и размеры хранилища, включение стека
-# наблюдаемости флагом, имена и ключи секретов, полный контур переменных SENTINEL_, Postgres и
+# наблюдаемости флагом, имена и ключи секретов, полный контур переменных AEGIL_, Postgres и
 # S3, сетевые политики, imagePullSecrets, ресурсы, логин и пароль Grafana.
 
 # --- Реестр и единая версия образов -------------------------------------------------------------
@@ -9,7 +9,7 @@ image:
   # Адрес реестра, обязателен (например registry.example.com:5000). Совпадает с REGISTRY в build.sh.
   registry: registry.example.com:5000
   # Префикс репозитория внутри реестра. Полное имя образа: registry/repository/<компонент>:<tag>.
-  repository: kube-sentinel
+  repository: aegil
   # Единый тег на все образы продукта. Пусто означает: использовать Chart.appVersion. Задавайте
   # тот же тег, под которым собрано build.sh, чтобы номер версии был согласован везде.
   tag: ""
@@ -21,12 +21,12 @@ imagePullSecrets: []
 # --- Пространства имён --------------------------------------------------------------------------
 namespace:
   # Пространство, куда СТАВИТСЯ сам продукт. Обычно это release namespace helm.
-  install: sentinel
+  install: aegil
   # Создавать ли ресурс Namespace из чарта (обычно namespace создаёт helm --create-namespace,
   # тогда оставьте false, чтобы не было двойного владения ресурсом).
   create: false
   # Целевое НАБЛЮДАЕМОЕ и управляемое пространство имён. Отдельно от пространства установки: агент
-  # может стоять в sentinel, а следить за пространством приложения заказчика. Пусто означает
+  # может стоять в aegil, а следить за пространством приложения заказчика. Пусто означает
   # «то же, что install».
   target: ""
 
@@ -36,16 +36,16 @@ secrets:
   # секрет с этим именем и перечисленными ключами до установки. Имена и ключи согласованы с
   # манифестами, README и .env.example.
   main:
-    name: sentinel-secrets
+    name: aegil-secrets
     keys:
-      operators: SENTINEL_OPERATORS
-      nodeagentToken: SENTINEL_NODEAGENT_TOKEN
-      llmApiKey: SENTINEL_LLM_API_KEY
-      postgresDsn: SENTINEL_POSTGRES_DSN
-      s3Endpoint: SENTINEL_S3_ENDPOINT
-      s3AccessKey: SENTINEL_S3_ACCESS_KEY
-      s3SecretKey: SENTINEL_S3_SECRET_KEY
-      s3Bucket: SENTINEL_S3_BUCKET
+      operators: AEGIL_OPERATORS
+      nodeagentToken: AEGIL_NODEAGENT_TOKEN
+      llmApiKey: AEGIL_LLM_API_KEY
+      postgresDsn: AEGIL_POSTGRES_DSN
+      s3Endpoint: AEGIL_S3_ENDPOINT
+      s3AccessKey: AEGIL_S3_ACCESS_KEY
+      s3SecretKey: AEGIL_S3_SECRET_KEY
+      s3Bucket: AEGIL_S3_BUCKET
   # Секрет Grafana с логином и паролем администратора. Аналогично создаётся владельцем.
   grafana:
     name: grafana-admin

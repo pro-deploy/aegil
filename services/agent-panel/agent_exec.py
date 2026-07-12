@@ -54,20 +54,20 @@ import policy
 import slo
 
 # Предел шагов агентного цикла: защита от бесконечного планирования модели.
-AGENT_MAX_STEPS = int(os.getenv("SENTINEL_AGENT_MAX_STEPS", "12"))
+AGENT_MAX_STEPS = int(os.getenv("AEGIL_AGENT_MAX_STEPS", "12"))
 # Ограничение вывода команды в трейсе и в результате инструмента, чтобы длинные логи не раздували
 # ни ответ панели, ни контекст модели.
-_OUTPUT_LIMIT = int(os.getenv("SENTINEL_AGENT_OUTPUT_LIMIT", "6000"))
+_OUTPUT_LIMIT = int(os.getenv("AEGIL_AGENT_OUTPUT_LIMIT", "6000"))
 # Таймаут узловой команды через node-agent.
 _NODE_TIMEOUT = config.NODEAGENT_TIMEOUT
 # Срок жизни отложенного подтверждения.
-PENDING_TTL_SECONDS = int(os.getenv("SENTINEL_AGENT_PENDING_TTL_SECONDS", "300"))
+PENDING_TTL_SECONDS = int(os.getenv("AEGIL_AGENT_PENDING_TTL_SECONDS", "300"))
 
 # Каталог состояния вне рабочего дерева (тот же, что у гардов и аудита), чтобы агент не мог стереть
 # собственные отложенные подтверждения как safe_write.
-_STATE_DIR = os.getenv("SENTINEL_STATE_DIR", "/data")
-_PENDING_PATH = Path(os.getenv("SENTINEL_AGENT_PENDING", str(Path(_STATE_DIR) / "agent-pending.json")))
-_AUTONOMY_PATH = Path(os.getenv("SENTINEL_AGENT_AUTONOMY", str(Path(_STATE_DIR) / "agent-autonomy")))
+_STATE_DIR = os.getenv("AEGIL_STATE_DIR", "/data")
+_PENDING_PATH = Path(os.getenv("AEGIL_AGENT_PENDING", str(Path(_STATE_DIR) / "agent-pending.json")))
+_AUTONOMY_PATH = Path(os.getenv("AEGIL_AGENT_AUTONOMY", str(Path(_STATE_DIR) / "agent-autonomy")))
 
 _LOCK = threading.RLock()
 
@@ -224,7 +224,7 @@ def _run_node(node: str, argv, timeout: int = _NODE_TIMEOUT) -> dict:
     """Исполняет argv на узле через node-agent. Мягкая деградация: нет токена или узла даёт честную
     ошибку шага, а не падение."""
     if not config.NODEAGENT_TOKEN:
-        return {"error": "узловые команды недоступны: не задан SENTINEL_NODEAGENT_TOKEN"}
+        return {"error": "узловые команды недоступны: не задан AEGIL_NODEAGENT_TOKEN"}
     real = k8s.resolve_node(node) if node else None
     endpoint = k8s.get_node_agent_endpoint(real or node) if (real or node) else None
     if not endpoint:
@@ -241,7 +241,7 @@ def _run_node(node: str, argv, timeout: int = _NODE_TIMEOUT) -> dict:
 
 def _control_node() -> str | None:
     """Выбирает узел управляющего слоя для кластерных команд без зашитых имён: узел, чья метка роли
-    (SENTINEL_NODE_ROLE_LABEL) указывает на control-plane, определяется живьём через resolve_node;
+    (AEGIL_NODE_ROLE_LABEL) указывает на control-plane, определяется живьём через resolve_node;
     если такого нет, берётся первый узел кластера. Роль в списке узлов не публикуется, поэтому
     control-plane выясняется именно по метке, а не по полю списка."""
     nodes = k8s.list_nodes() or []

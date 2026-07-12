@@ -1,5 +1,5 @@
 """Загрузка обученного классификатора маршрутизации SetFit для сервиса разбора
-первопричин kube-sentinel. Модель обучает отдельный тренер (сервис rca-trainer),
+первопричин aegil. Модель обучает отдельный тренер (сервис rca-trainer),
 складывает её версионированным архивом в объектное хранилище S3 и обновляет
 указатель latest. Здесь модель при необходимости синхронизируется из S3 в локальный
 каталог и загружается для инференса.
@@ -16,7 +16,7 @@
 когда сама выбранная разметка ненадёжна, а не тогда, когда какой-то невыбранный
 класс случайно оказался близко к границе.
 
-Конфигурация берётся из переменных окружения с единым префиксом SENTINEL_ согласно
+Конфигурация берётся из переменных окружения с единым префиксом AEGIL_ согласно
 контракту продукта (docs/CONVENTIONS.md).
 """
 from __future__ import annotations
@@ -27,17 +27,17 @@ import tarfile
 from router import BRANCHES
 
 # Каталог локальной распаковки модели и порог отбора ветки.
-MODEL_DIR = os.getenv("SENTINEL_SETFIT_DIR", "/tmp/setfit-router")
-SELECT_THRESHOLD = float(os.getenv("SENTINEL_SETFIT_SELECT_THRESHOLD", "0.5"))
+MODEL_DIR = os.getenv("AEGIL_SETFIT_DIR", "/tmp/setfit-router")
+SELECT_THRESHOLD = float(os.getenv("AEGIL_SETFIT_SELECT_THRESHOLD", "0.5"))
 
 # Объектное хранилище. Ключ модели собирается из префикса и указателя latest, который
 # ведёт тренер. Держать здесь конкретную версию не требуется: сервис всегда тянет ту
 # версию, на которую указывает latest, а сам файл latest.json обновляется атомарно
 # тренером только после прохождения валидационного гейта.
-S3_ENDPOINT = os.getenv("SENTINEL_S3_ENDPOINT", "")
-S3_REGION = os.getenv("SENTINEL_S3_REGION", "ru-1")
-S3_BUCKET = os.getenv("SENTINEL_S3_BUCKET", "")
-MODEL_KEY_PREFIX = os.getenv("SENTINEL_MODEL_KEY_PREFIX", "rca/setfit-router").strip("/")
+S3_ENDPOINT = os.getenv("AEGIL_S3_ENDPOINT", "")
+S3_REGION = os.getenv("AEGIL_S3_REGION", "ru-1")
+S3_BUCKET = os.getenv("AEGIL_S3_BUCKET", "")
+MODEL_KEY_PREFIX = os.getenv("AEGIL_MODEL_KEY_PREFIX", "rca/setfit-router").strip("/")
 
 
 class _Classifier:
@@ -132,8 +132,8 @@ def sync_from_s3(dest: str = MODEL_DIR) -> bool:
 
         s3 = boto3.client(
             "s3", endpoint_url=S3_ENDPOINT, region_name=S3_REGION,
-            aws_access_key_id=os.getenv("SENTINEL_S3_ACCESS_KEY"),
-            aws_secret_access_key=os.getenv("SENTINEL_S3_SECRET_KEY"))
+            aws_access_key_id=os.getenv("AEGIL_S3_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("AEGIL_S3_SECRET_KEY"))
         key = _resolve_latest_key(s3)
         tmp = tempfile.mkdtemp()
         tar = os.path.join(tmp, "model.tar.gz")

@@ -21,12 +21,12 @@ from __future__ import annotations
 
 import os
 
-PRIOR_ODDS = float(os.getenv("SENTINEL_RCA_PRIOR_ODDS", "0.1"))
-ODDS_CEILING = float(os.getenv("SENTINEL_RCA_ODDS_CEILING", "999.0"))
-BAND_LOW = float(os.getenv("SENTINEL_RCA_BAND_LOW", "0.5"))
-BAND_HIGH = float(os.getenv("SENTINEL_RCA_BAND_HIGH", "0.85"))
+PRIOR_ODDS = float(os.getenv("AEGIL_RCA_PRIOR_ODDS", "0.1"))
+ODDS_CEILING = float(os.getenv("AEGIL_RCA_ODDS_CEILING", "999.0"))
+BAND_LOW = float(os.getenv("AEGIL_RCA_BAND_LOW", "0.5"))
+BAND_HIGH = float(os.getenv("AEGIL_RCA_BAND_HIGH", "0.85"))
 # Множитель демпфера восстановления (значение меньше единицы понижает уверенность).
-DAMPER_FACTOR = float(os.getenv("SENTINEL_RCA_DAMPER_FACTOR", "0.5"))
+DAMPER_FACTOR = float(os.getenv("AEGIL_RCA_DAMPER_FACTOR", "0.5"))
 
 
 def band(confidence: float) -> str:

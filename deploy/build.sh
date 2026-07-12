@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Сборка образов kube-sentinel и публикация в реестр. Все образы продукта несут ОДНУ и ту же
+# Сборка образов aegil и публикация в реестр. Все образы продукта несут ОДНУ и ту же
 # семантическую версию (VERSION) и тянутся кластером из реестра. На каждый деплой присваивается
 # НОВАЯ версия: перезапись уже выпущенного тега на месте запрещена (см. проверку ниже), потому
 # что иначе по номеру версии невозможно понять, какой именно код работает на кластере, и ломается
@@ -36,7 +36,7 @@ fi
 # останавливается, чтобы не подменить содержимое под тем же номером. Проверка через manifest
 # inspect не требует скачивания образа.
 assert_tag_free() { # имя
-  local img="${REGISTRY}/kube-sentinel/${1}:${VERSION}"
+  local img="${REGISTRY}/aegil/${1}:${VERSION}"
   if [[ "$ALLOW_TAG_OVERWRITE" == "1" ]]; then
     return 0
   fi
@@ -50,7 +50,7 @@ assert_tag_free() { # имя
 
 build_push() { # имя контекст [dockerfile]
   local name="$1" ctx="$2" df="${3:-}"
-  local img="${REGISTRY}/kube-sentinel/${name}:${VERSION}"
+  local img="${REGISTRY}/aegil/${name}:${VERSION}"
   assert_tag_free "$name"
   echo ">> сборка ${img} (платформа ${PLATFORM})"
   if [ -n "$df" ]; then
@@ -74,9 +74,9 @@ if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   if git -C "$ROOT" rev-parse "v${VERSION}" >/dev/null 2>&1; then
     echo ">> git-тег v${VERSION} уже существует, не переставляю"
   else
-    git -C "$ROOT" tag -a "v${VERSION}" -m "kube-sentinel ${VERSION}"
+    git -C "$ROOT" tag -a "v${VERSION}" -m "aegil ${VERSION}"
     echo ">> проставлен git-тег v${VERSION} (запушьте его: git push origin v${VERSION})"
   fi
 fi
 
-echo "Готово: образы kube-sentinel/*:${VERSION} (группа ${GROUP}) опубликованы в ${REGISTRY}."
+echo "Готово: образы aegil/*:${VERSION} (группа ${GROUP}) опубликованы в ${REGISTRY}."

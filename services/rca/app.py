@@ -1,4 +1,4 @@
-"""Сервис детерминированного анализа первопричин kube-sentinel.
+"""Сервис детерминированного анализа первопричин aegil.
 
 Принимает окно логов (напрямую в теле запроса или через чтение из Loki), прогоняет
 детерминированное ядро (агрегатор фактов, каталог детекторов, байесовский скоринг,
@@ -7,7 +7,7 @@
 запроса инженера и для формулировки отчёта по уже посчитанным фактам, и её вывод
 проходит гард заземления.
 
-Вся конфигурация вынесена под единый префикс SENTINEL_. Обращение к Loki обёрнуто:
+Вся конфигурация вынесена под единый префикс AEGIL_. Обращение к Loki обёрнуто:
 недоступность источника отдаётся вызывающему как осмысленный код 502 с пояснением,
 а не как голый отказ сервера. Таймауты обращения к Loki и к языковой модели заданы
 раздельно и настраиваются окружением.
@@ -36,7 +36,7 @@ from loki import DEFAULT_QUERY, LokiError, fetch_window
 from pipeline import analyze
 from report import formulate
 
-app = FastAPI(title="kube-sentinel-rca")
+app = FastAPI(title="aegil-rca")
 
 _SERVICE = "rca"
 _trace_ctx: ContextVar = ContextVar("trace_id", default="")
@@ -96,12 +96,12 @@ async def _trace_mw(request, call_next):
 
 
 # Базовая линия берётся тем же окном со сдвигом назад (по умолчанию на неделю).
-BASELINE_LAG_HOURS = int(os.getenv("SENTINEL_RCA_BASELINE_LAG_HOURS", "168"))
+BASELINE_LAG_HOURS = int(os.getenv("AEGIL_RCA_BASELINE_LAG_HOURS", "168"))
 
 # Адрес языковой модели для формулировки отчёта (модель только облекает факты в текст).
-LLM_URL = os.getenv("SENTINEL_LLM_BASE_URL", "http://llm:9102").rstrip("/")
+LLM_URL = os.getenv("AEGIL_LLM_BASE_URL", "http://llm:9102").rstrip("/")
 # Раздельный таймаут обращения к языковой модели (генерация дольше, чем чтение логов).
-LLM_TIMEOUT = float(os.getenv("SENTINEL_LLM_TIMEOUT", "120"))
+LLM_TIMEOUT = float(os.getenv("AEGIL_LLM_TIMEOUT", "120"))
 
 
 def _llm_complete(prompt: str) -> str:
@@ -117,8 +117,8 @@ _setfit = setfit_model.load()
 # Кэш базовой линии: она меняется медленно, поэтому кэшируем окно на час, чтобы не
 # запрашивать хранилище логов на каждый разбор. Тревога при заполнении логируется.
 _baseline_cache = BoundedCache(
-    capacity=int(os.getenv("SENTINEL_RCA_BASELINE_CACHE_CAP", "32")),
-    ttl_seconds=float(os.getenv("SENTINEL_RCA_BASELINE_CACHE_TTL", "3600")),
+    capacity=int(os.getenv("AEGIL_RCA_BASELINE_CACHE_CAP", "32")),
+    ttl_seconds=float(os.getenv("AEGIL_RCA_BASELINE_CACHE_TTL", "3600")),
     on_alarm=lambda n, cap: _trace_log.warning(
         "baseline cache near full", extra={"fields": {"event": "cache.alarm", "size": n, "cap": cap}}),
 )
@@ -183,7 +183,7 @@ def outcome_endpoint(req: OutcomeReq) -> dict:
     from store import DSN, record_outcome
 
     if not DSN:
-        raise HTTPException(status_code=502, detail="хранилище исходов недоступно: SENTINEL_POSTGRES_DSN не задан")
+        raise HTTPException(status_code=502, detail="хранилище исходов недоступно: AEGIL_POSTGRES_DSN не задан")
     try:
         ok = record_outcome(DSN, req.fingerprint, req.status, req.root_cause, req.action, req.resolved)
     except Exception as exc:  # защита от неожиданного сбоя драйвера базы данных

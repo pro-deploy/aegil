@@ -1,9 +1,9 @@
 {{- if .Values.nodeAgent.enabled }}
-{{- $ns := include "kube-sentinel.namespace" . -}}
+{{- $ns := include "aegil.namespace" . -}}
 {{- $sec := .Values.secrets.main -}}
 # TODO(node-agent): ПЛЕЙСХОЛДЕР. Финальный манифест узлового агента (модель доступа и транспорт)
 # готовит и переписывает отдельный агент (deploy/k8s/50-node-agent.yaml). Здесь дан минимальный
-# параметризованный шаблон DaemonSet для интеграции: он согласован с контрактом SENTINEL_ и с
+# параметризованный шаблон DaemonSet для интеграции: он согласован с контрактом AEGIL_ и с
 # именами секретов чарта, но по умолчанию ВЫКЛЮЧЕН (nodeAgent.enabled=false), чтобы чарт не
 # выкатывал непроверенную привилегированную god-mode-поверхность до её финализации. После того как
 # финальный манифест готов, перенесите сюда его securityContext, транспорт (шифрование), сетевую
@@ -14,7 +14,7 @@ metadata:
   name: node-agent
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   selector: {matchLabels: {app: node-agent}}
   template:
@@ -22,24 +22,24 @@ spec:
       labels: {app: node-agent}
     spec:
       hostPID: true
-{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+{{- include "aegil.imagePullSecrets" . | indent 6 }}
       {{- with .Values.nodeAgent.tolerations }}
       tolerations:
 {{ toYaml . | indent 8 }}
       {{- end }}
       containers:
         - name: node-agent
-          image: {{ include "kube-sentinel.image" (list . "node-agent") }}
+          image: {{ include "aegil.image" (list . "node-agent") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             privileged: true   # TODO(node-agent): пересмотреть при финализации модели доступа
           ports: [{containerPort: {{ .Values.nodeAgent.port }}}]
           env:
-            - name: SENTINEL_NODE_NAME
+            - name: AEGIL_NODE_NAME
               valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
-            - name: SENTINEL_NODEAGENT_TOKEN
+            - name: AEGIL_NODEAGENT_TOKEN
               valueFrom: {secretKeyRef: {name: {{ $sec.name }}, key: {{ $sec.keys.nodeagentToken }}}}
-            - {name: SENTINEL_NODEAGENT_PORT, value: {{ .Values.nodeAgent.port | quote }}}
+            - {name: AEGIL_NODEAGENT_PORT, value: {{ .Values.nodeAgent.port | quote }}}
           readinessProbe:
             httpGet: {path: /health, port: {{ .Values.nodeAgent.port }}}
             initialDelaySeconds: 5

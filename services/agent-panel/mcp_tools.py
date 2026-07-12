@@ -12,7 +12,7 @@ Loki, Tempo): с ними агент видит метрики, трассы и 
 требует подтверждения оператора через тот же механизм отложенного подтверждения, что и опасные команды.
 Так сохраняется инвариант: ни одна мутация не исполняется автономно в обход гейта.
 
-Конфигурация в переменной SENTINEL_MCP_SERVERS: JSON-список объектов
+Конфигурация в переменной AEGIL_MCP_SERVERS: JSON-список объектов
   {"name": "grafana", "url": "http://grafana-mcp:8000/mcp", "read_only": true, "token": "..."}
 name задаёт пространство имён инструмента (mcp__<name>__<tool>), url это эндпоинт MCP по протоколу
 Streamable HTTP, read_only разрешает свободное исполнение (по умолчанию false, fail-safe), token
@@ -56,16 +56,16 @@ class MCPTool:
 
 
 def load_config(raw: str | None = None) -> list[ServerCfg]:
-    """Разбирает SENTINEL_MCP_SERVERS в список конфигураций серверов. Пустое или мусорное значение
+    """Разбирает AEGIL_MCP_SERVERS в список конфигураций серверов. Пустое или мусорное значение
     даёт пустой список (MCP выключен)."""
-    raw = raw if raw is not None else os.getenv("SENTINEL_MCP_SERVERS", "")
+    raw = raw if raw is not None else os.getenv("AEGIL_MCP_SERVERS", "")
     raw = raw.strip()
     if not raw:
         return []
     try:
         items = json.loads(raw)
     except json.JSONDecodeError:
-        print("mcp_tools: SENTINEL_MCP_SERVERS не разобран как JSON, MCP выключен", flush=True)
+        print("mcp_tools: AEGIL_MCP_SERVERS не разобран как JSON, MCP выключен", flush=True)
         return []
     out: list[ServerCfg] = []
     for it in items if isinstance(items, list) else []:

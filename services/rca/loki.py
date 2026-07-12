@@ -15,8 +15,8 @@
 Сортировка ведётся по метке времени Loki, а не по лексикографическому сравнению
 строкового поля, которого во внешнем логе может не быть вовсе.
 
-Конфигурация берётся из переменных окружения с единым префиксом SENTINEL_. Адрес
-Loki из SENTINEL_LOKI_URL, селектор потоков из SENTINEL_LOKI_QUERY (по умолчанию
+Конфигурация берётся из переменных окружения с единым префиксом AEGIL_. Адрес
+Loki из AEGIL_LOKI_URL, селектор потоков из AEGIL_LOKI_QUERY (по умолчанию
 селектор по наблюдаемому пространству имён без зашитого имени приложения). Окно
 читается с направлением backward и пагинируется, чтобы конец окна, где обычно и
 лежит инцидент, не терялся молча при упоре в лимит выборки.
@@ -31,22 +31,22 @@ import httpx
 
 from normalize import infer_level
 
-LOKI_URL = os.getenv("SENTINEL_LOKI_URL", "http://loki:3100").rstrip("/")
+LOKI_URL = os.getenv("AEGIL_LOKI_URL", "http://loki:3100").rstrip("/")
 
 # Наблюдаемое пространство имён. По умолчанию селектор строится по нему, без зашитого
 # имени приложения заказчика (соглашение о доменной нейтральности).
-NAMESPACE = os.getenv("SENTINEL_NAMESPACE", "default")
-DEFAULT_QUERY = os.getenv("SENTINEL_LOKI_QUERY", '{namespace="%s"}' % NAMESPACE)
+NAMESPACE = os.getenv("AEGIL_NAMESPACE", "default")
+DEFAULT_QUERY = os.getenv("AEGIL_LOKI_QUERY", '{namespace="%s"}' % NAMESPACE)
 
 # Раздельные таймауты соединения и чтения тела: медленный источник не должен
 # бесконечно держать анализ, но и не должен рваться на первой же секунде.
-CONNECT_TIMEOUT = float(os.getenv("SENTINEL_LOKI_CONNECT_TIMEOUT", "5"))
-READ_TIMEOUT = float(os.getenv("SENTINEL_LOKI_READ_TIMEOUT", "30"))
+CONNECT_TIMEOUT = float(os.getenv("AEGIL_LOKI_CONNECT_TIMEOUT", "5"))
+READ_TIMEOUT = float(os.getenv("AEGIL_LOKI_READ_TIMEOUT", "30"))
 
 # Размер страницы выборки и потолок числа страниц. Пагинация идёт назад по времени
 # от конца окна, поэтому первые же страницы несут самые свежие строки инцидента.
-PAGE_LIMIT = int(os.getenv("SENTINEL_LOKI_PAGE_LIMIT", "5000"))
-MAX_PAGES = int(os.getenv("SENTINEL_LOKI_MAX_PAGES", "20"))
+PAGE_LIMIT = int(os.getenv("AEGIL_LOKI_PAGE_LIMIT", "5000"))
+MAX_PAGES = int(os.getenv("AEGIL_LOKI_MAX_PAGES", "20"))
 
 
 class LokiError(RuntimeError):

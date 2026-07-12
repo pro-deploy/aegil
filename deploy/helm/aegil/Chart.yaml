@@ -1,5 +1,5 @@
 apiVersion: v2
-name: kube-sentinel
+name: aegil
 description: >-
   Автономный SRE-агент для произвольного кластера Kubernetes. Панель агента с настраиваемым
   уровнем автономии, детерминированный разбор первопричин (RCA) с активным обучением,
@@ -18,8 +18,8 @@ keywords:
   - observability
   - incident-response
   - autonomous-agent
-home: https://example.com/kube-sentinel
+home: https://example.com/aegil
 sources:
-  - https://example.com/kube-sentinel
+  - https://example.com/aegil
 maintainers:
-  - name: kube-sentinel
+  - name: aegil

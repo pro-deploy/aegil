@@ -1,4 +1,4 @@
-"""Модульные тесты жизненного цикла инцидентов и помесячного хранилища kube-sentinel.
+"""Модульные тесты жизненного цикла инцидентов и помесячного хранилища aegil.
 
 Собираемый pytest-вид (функции с префиксом test_), без сети. Запуск:
     cd services/agent-panel && python3 -m pytest -q test_incidents_lifecycle.py
@@ -145,9 +145,9 @@ def test_sha256_identifier():
 def test_store_path_outside_worktree(monkeypatch):
     """Пути хранилища по умолчанию лежат в каталоге данных вне рабочего дерева агента, а не
     внутри каталога модуля."""
-    monkeypatch.delenv("SENTINEL_INCIDENTS", raising=False)
-    monkeypatch.delenv("SENTINEL_INCIDENTS_DIR", raising=False)
-    monkeypatch.setenv("SENTINEL_STATE_DIR", "/data")
+    monkeypatch.delenv("AEGIL_INCIDENTS", raising=False)
+    monkeypatch.delenv("AEGIL_INCIDENTS_DIR", raising=False)
+    monkeypatch.setenv("AEGIL_STATE_DIR", "/data")
     import importlib
     reloaded = importlib.reload(incidents)
     try:

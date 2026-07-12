@@ -6,9 +6,9 @@ import llm_metrics
 
 
 def _isolate(monkeypatch, tmp_path):
-    monkeypatch.setenv("SENTINEL_LLM_METRICS", str(tmp_path / "m.jsonl"))
-    monkeypatch.delenv("SENTINEL_LLM_COST_PROMPT", raising=False)
-    monkeypatch.delenv("SENTINEL_LLM_COST_COMPLETION", raising=False)
+    monkeypatch.setenv("AEGIL_LLM_METRICS", str(tmp_path / "m.jsonl"))
+    monkeypatch.delenv("AEGIL_LLM_COST_PROMPT", raising=False)
+    monkeypatch.delenv("AEGIL_LLM_COST_COMPLETION", raising=False)
     llm_metrics.reset()
 
 
@@ -34,7 +34,7 @@ def test_error_rate_counts_failures(monkeypatch, tmp_path):
 
 def test_cost_from_token_prices(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
-    monkeypatch.setenv("SENTINEL_LLM_COST_COMPLETION", "2.0")  # 2 у.е. за тысячу токенов ответа
+    monkeypatch.setenv("AEGIL_LLM_COST_COMPLETION", "2.0")  # 2 у.е. за тысячу токенов ответа
     llm_metrics.record("m", 50, prompt_tokens=1000, completion_tokens=1000, ok=True, now=1)
     s = llm_metrics.summary(now=2)
     assert s["cost_total"] == 2.0

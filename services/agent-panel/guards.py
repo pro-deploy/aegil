@@ -1,4 +1,4 @@
-"""Детерминированные ограничители автономного агента kube-sentinel. Все гарды живут вне
+"""Детерминированные ограничители автономного агента aegil. Все гарды живут вне
 языковой модели и проверяются ПОСЛЕ выбора действия, поэтому модель физически не может их
 обойти. Модуль состоит из чистых проверок над небольшим состоянием; состояние персистентно:
 каждое событие дописывается в append-only журнал формата JSONL в каталоге данных вне рабочего
@@ -20,8 +20,8 @@ FastAPI, поэтому весь цикл «прочитать, изменить
 record_attempt и record_result теряли бы инкременты и перемешивали строки в файле.
 
 Каталог состояния выносится за пределы рабочего дерева агента. По умолчанию используется
-каталог данных на постоянном томе (SENTINEL_STATE_DIR, обычно /data), а конкретный путь к
-журналу переопределяется переменной SENTINEL_GUARDS. Это принципиально: если бы журнал лежал
+каталог данных на постоянном томе (AEGIL_STATE_DIR, обычно /data), а конкретный путь к
+журналу переопределяется переменной AEGIL_GUARDS. Это принципиально: если бы журнал лежал
 внутри репозитория, детерминированный классификатор мог бы отнести его к безопасно удаляемым
 и агент стёр бы собственные гарды. При недоступности каталога данных модуль откатывается на
 временный каталог операционной системы, не прекращая работу (fail-safe).
@@ -37,38 +37,38 @@ import time
 from pathlib import Path
 
 # Пороги ограничителей. Значения по умолчанию из спецификации, переопределяются переменными
-# окружения с единым префиксом SENTINEL_.
-MAX_ATTEMPTS = int(os.getenv("SENTINEL_MAX_ATTEMPTS", "2"))
-FP_COOLDOWN_SECONDS = int(os.getenv("SENTINEL_FP_COOLDOWN_SECONDS", "1800"))
-SERVICE_COOLDOWN_SECONDS = int(os.getenv("SENTINEL_SERVICE_COOLDOWN_SECONDS", "900"))
-BUDGET_PER_HOUR = int(os.getenv("SENTINEL_BUDGET_PER_HOUR", "6"))
-BREAKER_FAILURES = int(os.getenv("SENTINEL_BREAKER_FAILURES", "3"))
-BREAKER_SECONDS = int(os.getenv("SENTINEL_BREAKER_SECONDS", "3600"))
-OSCILLATION_WINDOW_SECONDS = int(os.getenv("SENTINEL_OSCILLATION_WINDOW_SECONDS", "1800"))
+# окружения с единым префиксом AEGIL_.
+MAX_ATTEMPTS = int(os.getenv("AEGIL_MAX_ATTEMPTS", "2"))
+FP_COOLDOWN_SECONDS = int(os.getenv("AEGIL_FP_COOLDOWN_SECONDS", "1800"))
+SERVICE_COOLDOWN_SECONDS = int(os.getenv("AEGIL_SERVICE_COOLDOWN_SECONDS", "900"))
+BUDGET_PER_HOUR = int(os.getenv("AEGIL_BUDGET_PER_HOUR", "6"))
+BREAKER_FAILURES = int(os.getenv("AEGIL_BREAKER_FAILURES", "3"))
+BREAKER_SECONDS = int(os.getenv("AEGIL_BREAKER_SECONDS", "3600"))
+OSCILLATION_WINDOW_SECONDS = int(os.getenv("AEGIL_OSCILLATION_WINDOW_SECONDS", "1800"))
 
 # Ограничение размера журнала. Строки старше окна удержания и превышающие предел количества
 # усекаются при перезаписи, поэтому файл не растёт бесконечно, а load() перечитывает только
 # релевантное окно. Окно удержания берётся с запасом относительно самого длинного гарда
 # (предохранитель и кулдаун отпечатка), чтобы усечение никогда не отпускало активный лимит.
-RETENTION_SECONDS = int(os.getenv("SENTINEL_GUARDS_RETENTION_SECONDS",
+RETENTION_SECONDS = int(os.getenv("AEGIL_GUARDS_RETENTION_SECONDS",
                                   str(max(BREAKER_SECONDS, FP_COOLDOWN_SECONDS,
                                           OSCILLATION_WINDOW_SECONDS * 2) * 4)))
-MAX_LOG_RECORDS = int(os.getenv("SENTINEL_GUARDS_MAX_RECORDS", "5000"))
+MAX_LOG_RECORDS = int(os.getenv("AEGIL_GUARDS_MAX_RECORDS", "5000"))
 # Компакция запускается, когда число строк в файле превышает предел более чем во столько раз.
 _COMPACT_FACTOR = 2
 
 
 def _state_dir() -> Path:
     """Каталог данных вне рабочего дерева. По умолчанию /data (постоянный том), переопределяется
-    переменной SENTINEL_STATE_DIR."""
-    return Path(os.getenv("SENTINEL_STATE_DIR", "/data"))
+    переменной AEGIL_STATE_DIR."""
+    return Path(os.getenv("AEGIL_STATE_DIR", "/data"))
 
 
 def _default_state_path() -> Path:
-    """Путь журнала гардов. Явный SENTINEL_GUARDS имеет приоритет, иначе файл в каталоге данных.
+    """Путь журнала гардов. Явный AEGIL_GUARDS имеет приоритет, иначе файл в каталоге данных.
     Ни один из вариантов не лежит внутри рабочего дерева агента, поэтому агент не может отнести
     журнал к безопасно удаляемым и стереть собственные гарды."""
-    explicit = os.getenv("SENTINEL_GUARDS")
+    explicit = os.getenv("AEGIL_GUARDS")
     if explicit:
         return Path(explicit)
     return _state_dir() / "agent-guards.log.jsonl"
@@ -113,7 +113,7 @@ def _ensure_writable_dir(path: Path) -> Path:
             pass
         return path
     except OSError as exc:
-        fallback = Path(tempfile.gettempdir()) / "kube-sentinel" / path.name
+        fallback = Path(tempfile.gettempdir()) / "aegil" / path.name
         print(f"guards: каталог состояния {path.parent} недоступен ({exc}); "
               f"откат на {fallback.parent}", file=sys.stderr, flush=True)
         fallback.parent.mkdir(parents=True, exist_ok=True)

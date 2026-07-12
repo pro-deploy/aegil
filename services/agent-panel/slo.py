@@ -1,5 +1,5 @@
 """Цели уровня обслуживания (SLO), индикаторы (SLI) и бюджет ошибок как детерминированный
-гейт автономии kube-sentinel.
+гейт автономии aegil.
 
 Зрелые команды эксплуатации думают не абстрактной уверенностью модели, а нарушением
 бизнес-порога. Этот модуль переводит наблюдаемую долю ошибок окна в язык надёжности:
@@ -16,7 +16,7 @@
 которым слой исполнения понижает автономное действие до предложения, пока нарушения нет.
 
 Модуль детерминирован, без сети и без внешних зависимостей, пороги настраиваются окружением
-с префиксом SENTINEL_. При незаданной цели (SENTINEL_SLO_TARGET пусто) слой выключен и гейт
+с префиксом AEGIL_. При незаданной цели (AEGIL_SLO_TARGET пусто) слой выключен и гейт
 никого не сдерживает, поэтому поведение развёртываний без объявленных SLO не меняется.
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _f(name: str, default: float) -> float:
 def target() -> float | None:
     """Целевая доступность из окружения (доля успешных запросов, 0..1). None означает, что SLO
     не объявлены и слой выключен."""
-    raw = os.getenv("SENTINEL_SLO_TARGET", "").strip()
+    raw = os.getenv("AEGIL_SLO_TARGET", "").strip()
     if not raw:
         return None
     try:
@@ -59,15 +59,15 @@ def target() -> float | None:
 
 
 def fast_burn() -> float:
-    return _f("SENTINEL_SLO_FAST_BURN", 14.4)
+    return _f("AEGIL_SLO_FAST_BURN", 14.4)
 
 
 def slow_burn() -> float:
-    return _f("SENTINEL_SLO_SLOW_BURN", 6.0)
+    return _f("AEGIL_SLO_SLOW_BURN", 6.0)
 
 
 def gate_mode() -> str:
-    mode = os.getenv("SENTINEL_SLO_GATE", GATE_OFF).strip().lower()
+    mode = os.getenv("AEGIL_SLO_GATE", GATE_OFF).strip().lower()
     return mode if mode in (GATE_OFF, GATE_AT_RISK, GATE_CRITICAL) else GATE_OFF
 
 

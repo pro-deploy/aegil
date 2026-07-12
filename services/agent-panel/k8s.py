@@ -3,7 +3,7 @@
 Слой домен-агностичен и не содержит зашитых имён узлов, сервисов или синонимов: наблюдаемое и
 управляемое пространство имён, списки допустимых и запрещённых к перезапуску сервисов, а также
 метка роли узла для дружеских имён берутся из конфигурации продукта (модуль ``config`` с единым
-префиксом переменных окружения ``SENTINEL_``), топология же выясняется через сам API Kubernetes.
+префиксом переменных окружения ``AEGIL_``), топология же выясняется через сам API Kubernetes.
 Доступ идёт через сервисный аккаунт пода с минимальным разграничением прав (чтение подов, узлов,
 событий и деплойментов, перезапуск деплойментов и удаление подов). Перезапуск и удаление
 разрешены строго безсостоятельным сервисам из allowlist и запрещены сервисам из denylist,
@@ -37,7 +37,7 @@ _CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 ALLOWED = _config.RESTART_ALLOWLIST
 DENY = _config.RESTART_DENYLIST
 
-# Метка роли узла для дружеских имён. Берётся из конфига продукта (SENTINEL_NODE_ROLE_LABEL),
+# Метка роли узла для дружеских имён. Берётся из конфига продукта (AEGIL_NODE_ROLE_LABEL),
 # а не зашивается под конкретный кластер. Если метка на узлах не проставлена, агент оперирует
 # именами узлов как есть.
 NODE_ROLE_LABEL = _config.NODE_ROLE_LABEL
@@ -51,11 +51,11 @@ _READ_TIMEOUT = 15.0
 
 
 def _senv(name: str, default: str = "") -> str:
-    """Значение переменной окружения продукта (префикс SENTINEL_) с обрезкой пробелов.
+    """Значение переменной окружения продукта (префикс AEGIL_) с обрезкой пробелов.
 
     Используется только для параметров дискавери node-agent, не представленных в модуле config
     (пространство имён, селектор меток и порт node-agent). Прочая конфигурация приходит из config,
-    а не читается из окружения напрямую. Единый префикс SENTINEL_ соблюдается для всей настройки."""
+    а не читается из окружения напрямую. Единый префикс AEGIL_ соблюдается для всей настройки."""
     return os.getenv(name, default).strip()
 
 
@@ -336,15 +336,15 @@ def get_node_agent_endpoint(node: str):
     команда исполняется именно на том хосте, который выбрал агент. Дискавери идёт по метке
     DaemonSet в наблюдаемом пространстве имён (config.NAMESPACE) с фильтром по имени узла
     (spec.nodeName). Параметры дискавери (пространство имён, селектор меток, порт) настраиваются
-    переменными окружения продукта с префиксом SENTINEL_ и имеют нейтральные значения по умолчанию.
+    переменными окружения продукта с префиксом AEGIL_ и имеют нейтральные значения по умолчанию.
     Дружеское имя узла сначала приводится к реальному через resolve_node. Имя узла валидируется по
     DNS-1123 до подстановки в путь API."""
     node = resolve_node(node) or node
     if not _NAME_RE.match(str(node or "")):
         return None
-    ns = _senv("SENTINEL_NODEAGENT_NAMESPACE") or NAMESPACE
-    selector = _senv("SENTINEL_NODEAGENT_SELECTOR") or "app=node-agent"
-    port = _senv_int("SENTINEL_NODEAGENT_PORT", 9110)
+    ns = _senv("AEGIL_NODEAGENT_NAMESPACE") or NAMESPACE
+    selector = _senv("AEGIL_NODEAGENT_SELECTOR") or "app=node-agent"
+    port = _senv_int("AEGIL_NODEAGENT_PORT", 9110)
     data = _get_json(f"/api/v1/namespaces/{ns}/pods?labelSelector={selector}")
     if data is None:
         return None

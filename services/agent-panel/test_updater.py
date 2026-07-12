@@ -1,4 +1,4 @@
-"""Модульные тесты канала самообновления продукта kube-sentinel (модуль updater).
+"""Модульные тесты канала самообновления продукта aegil (модуль updater).
 
 Тесты собираются стандартным сборщиком pytest (функции с префиксом test_) и выполняются без
 обращения к сети: httpx-клиент инъектируется поддельной реализацией через аргумент ``http``, а
@@ -98,8 +98,8 @@ def _deployment(name: str, containers: list[dict]) -> dict:
 def _clean_env(monkeypatch):
     """Очищает переменные окружения продукта, влияющие на модуль, перед каждым тестом, чтобы тесты
     не зависели от окружения запуска и друг от друга."""
-    for var in ("SENTINEL_VERSION", "SENTINEL_UPDATE_CHANNEL_URL",
-                "SENTINEL_UPDATE_DEPLOYMENTS", "SENTINEL_NAMESPACE",
+    for var in ("AEGIL_VERSION", "AEGIL_UPDATE_CHANNEL_URL",
+                "AEGIL_UPDATE_DEPLOYMENTS", "AEGIL_NAMESPACE",
                 "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT"):
         monkeypatch.delenv(var, raising=False)
     yield
@@ -148,7 +148,7 @@ def test_newer_edges():
 
 
 def test_current_version_from_env(monkeypatch):
-    monkeypatch.setenv("SENTINEL_VERSION", "3.4.5")
+    monkeypatch.setenv("AEGIL_VERSION", "3.4.5")
     _eq("версия из окружения", updater.current_version(), "3.4.5")
 
 
@@ -170,8 +170,8 @@ def test_current_version_default(monkeypatch):
 
 
 def test_check_update_available(monkeypatch):
-    monkeypatch.setenv("SENTINEL_VERSION", "1.0.0")
-    monkeypatch.setenv("SENTINEL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
+    monkeypatch.setenv("AEGIL_VERSION", "1.0.0")
+    monkeypatch.setenv("AEGIL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
     client = _ChannelClient(_FakeResponse(json_body={
         "version": "1.1.0", "image_tag": "1.1.0", "notes": "новые возможности"}))
     res = updater.check(http=client)
@@ -185,8 +185,8 @@ def test_check_update_available(monkeypatch):
 
 
 def test_check_no_update(monkeypatch):
-    monkeypatch.setenv("SENTINEL_VERSION", "1.1.0")
-    monkeypatch.setenv("SENTINEL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
+    monkeypatch.setenv("AEGIL_VERSION", "1.1.0")
+    monkeypatch.setenv("AEGIL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
     client = _ChannelClient(_FakeResponse(json_body={
         "version": "1.1.0", "image_tag": "1.1.0"}))
     res = updater.check(http=client)
@@ -195,8 +195,8 @@ def test_check_no_update(monkeypatch):
 
 
 def test_check_channel_error(monkeypatch):
-    monkeypatch.setenv("SENTINEL_VERSION", "1.0.0")
-    monkeypatch.setenv("SENTINEL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
+    monkeypatch.setenv("AEGIL_VERSION", "1.0.0")
+    monkeypatch.setenv("AEGIL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
     client = _ChannelClient(exc=httpx.ConnectError("нет связи"))
     res = updater.check(http=client)
     _eq("ошибка канала мягко деградирует", res["available"], False)
@@ -212,7 +212,7 @@ def test_check_channel_not_configured(monkeypatch):
 
 
 def test_check_channel_bad_body(monkeypatch):
-    monkeypatch.setenv("SENTINEL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
+    monkeypatch.setenv("AEGIL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
     client = _ChannelClient(_FakeResponse(json_body=["не", "словарь"]))
     res = updater.check(http=client)
     _eq("некорректное тело мягко деградирует", res["available"], False)
@@ -220,7 +220,7 @@ def test_check_channel_bad_body(monkeypatch):
 
 
 def test_check_channel_no_version(monkeypatch):
-    monkeypatch.setenv("SENTINEL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
+    monkeypatch.setenv("AEGIL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
     client = _ChannelClient(_FakeResponse(json_body={"image_tag": "1.2.3"}))
     res = updater.check(http=client)
     _eq("отсутствие версии в канале", res["available"], False)
@@ -232,8 +232,8 @@ def test_check_channel_no_version(monkeypatch):
 
 def test_apply_without_confirmation_does_nothing(monkeypatch):
     # Даже при полностью настроенном контуре без подтверждения не делается НИЧЕГО.
-    monkeypatch.setenv("SENTINEL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
-    monkeypatch.setenv("SENTINEL_UPDATE_DEPLOYMENTS", "agent-panel")
+    monkeypatch.setenv("AEGIL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
+    monkeypatch.setenv("AEGIL_UPDATE_DEPLOYMENTS", "agent-panel")
     _fake_incluster(monkeypatch, present=True)
     # Клиент, который упал бы при любом обращении: доказывает, что сеть не трогается.
     client = _ChannelClient(exc=AssertionError("канал не должен запрашиваться без подтверждения"))
@@ -256,9 +256,9 @@ def test_apply_confirmed_must_be_true_not_truthy(monkeypatch):
 
 
 def test_apply_outside_cluster_honest_refusal(monkeypatch):
-    monkeypatch.setenv("SENTINEL_VERSION", "1.0.0")
-    monkeypatch.setenv("SENTINEL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
-    monkeypatch.setenv("SENTINEL_UPDATE_DEPLOYMENTS", "agent-panel")
+    monkeypatch.setenv("AEGIL_VERSION", "1.0.0")
+    monkeypatch.setenv("AEGIL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
+    monkeypatch.setenv("AEGIL_UPDATE_DEPLOYMENTS", "agent-panel")
     _fake_incluster(monkeypatch, present=False)
     client = _ChannelClient(_FakeResponse(json_body={"version": "1.1.0", "image_tag": "1.1.0"}))
     res = updater.apply(True, "alice", http=client)
@@ -270,10 +270,10 @@ def test_apply_outside_cluster_honest_refusal(monkeypatch):
 
 
 def test_apply_confirmed_patches_only_tag(monkeypatch):
-    monkeypatch.setenv("SENTINEL_VERSION", "1.0.0")
-    monkeypatch.setenv("SENTINEL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
-    monkeypatch.setenv("SENTINEL_UPDATE_DEPLOYMENTS", "agent-panel, rca")
-    monkeypatch.setenv("SENTINEL_NAMESPACE", "sentinel")
+    monkeypatch.setenv("AEGIL_VERSION", "1.0.0")
+    monkeypatch.setenv("AEGIL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
+    monkeypatch.setenv("AEGIL_UPDATE_DEPLOYMENTS", "agent-panel, rca")
+    monkeypatch.setenv("AEGIL_NAMESPACE", "aegil")
     _fake_incluster(monkeypatch, present=True)
 
     # check() ходит своим клиентом канала; API ходит своим. Разделяем их подменой check.
@@ -282,7 +282,7 @@ def test_apply_confirmed_patches_only_tag(monkeypatch):
 
     api = _ApiClient({
         "agent-panel": _deployment("agent-panel", [
-            {"name": "panel", "image": "registry.example:5000/sentinel/agent-panel:1.0.0"}]),
+            {"name": "panel", "image": "registry.example:5000/aegil/agent-panel:1.0.0"}]),
         "rca": _deployment("rca", [
             {"name": "rca", "image": "ghcr.io/acme/rca:v1.0.0"}]),
     })
@@ -290,54 +290,54 @@ def test_apply_confirmed_patches_only_tag(monkeypatch):
 
     _eq("общий успех", res["ok"], True)
     _eq("оператор в отчёте", res["operator"], "alice")
-    _eq("пространство имён", res["namespace"], "sentinel")
+    _eq("пространство имён", res["namespace"], "aegil")
     _eq("два деплоймента в отчёте", len(res["report"]), 2)
     assert all(item["ok"] for item in res["report"]), res["report"]
 
     # PATCH ушёл на правильные адреса обоих деплойментов в правильном пространстве имён.
     patched_urls = [u for (u, _b) in api.patch_calls]
     _eq("два PATCH", len(patched_urls), 2)
-    assert "https://api:6443/apis/apps/v1/namespaces/sentinel/deployments/agent-panel" \
+    assert "https://api:6443/apis/apps/v1/namespaces/aegil/deployments/agent-panel" \
         in patched_urls, patched_urls
-    assert "https://api:6443/apis/apps/v1/namespaces/sentinel/deployments/rca" \
+    assert "https://api:6443/apis/apps/v1/namespaces/aegil/deployments/rca" \
         in patched_urls, patched_urls
 
     # Меняется строго тег: реестр (включая порт) и имя образа сохранены.
     by_url = {u: b for (u, b) in api.patch_calls}
     panel_body = by_url[
-        "https://api:6443/apis/apps/v1/namespaces/sentinel/deployments/agent-panel"]
+        "https://api:6443/apis/apps/v1/namespaces/aegil/deployments/agent-panel"]
     panel_image = panel_body["spec"]["template"]["spec"]["containers"][0]["image"]
     _eq("реестр с портом и имя сохранены, тег заменён",
-        panel_image, "registry.example:5000/sentinel/agent-panel:1.1.0")
+        panel_image, "registry.example:5000/aegil/agent-panel:1.1.0")
 
-    rca_body = by_url["https://api:6443/apis/apps/v1/namespaces/sentinel/deployments/rca"]
+    rca_body = by_url["https://api:6443/apis/apps/v1/namespaces/aegil/deployments/rca"]
     rca_image = rca_body["spec"]["template"]["spec"]["containers"][0]["image"]
     _eq("реестр и имя сохранены, тег заменён", rca_image, "ghcr.io/acme/rca:1.1.0")
 
 
 def test_apply_self_patch_of_panel(monkeypatch):
     # Самопатч: панель в списке целевых деплойментов, её образ переводится на новый тег штатно.
-    monkeypatch.setenv("SENTINEL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
-    monkeypatch.setenv("SENTINEL_UPDATE_DEPLOYMENTS", "agent-panel")
-    monkeypatch.setenv("SENTINEL_NAMESPACE", "sentinel")
+    monkeypatch.setenv("AEGIL_UPDATE_CHANNEL_URL", "https://updates.example/latest.json")
+    monkeypatch.setenv("AEGIL_UPDATE_DEPLOYMENTS", "agent-panel")
+    monkeypatch.setenv("AEGIL_NAMESPACE", "aegil")
     _fake_incluster(monkeypatch, present=True)
     monkeypatch.setattr(updater, "check", lambda *, http=None: {
         "current": "1.0.0", "latest": "2.0.0", "image_tag": "2.0.0", "available": True})
     api = _ApiClient({
         "agent-panel": _deployment("agent-panel", [
-            {"name": "panel", "image": "registry.example/sentinel/agent-panel:1.0.0"}]),
+            {"name": "panel", "image": "registry.example/aegil/agent-panel:1.0.0"}]),
     })
     res = updater.apply(True, "owner", http=api)
     _eq("самопатч успешен", res["ok"], True)
     _, body = api.patch_calls[0]
     image = body["spec"]["template"]["spec"]["containers"][0]["image"]
     _eq("образ панели переведён на новый тег",
-        image, "registry.example/sentinel/agent-panel:2.0.0")
+        image, "registry.example/aegil/agent-panel:2.0.0")
 
 
 def test_apply_unavailable_update_refuses(monkeypatch):
     # Обновление недоступно (нет новее версии): apply не трогает API даже с подтверждением.
-    monkeypatch.setenv("SENTINEL_UPDATE_DEPLOYMENTS", "agent-panel")
+    monkeypatch.setenv("AEGIL_UPDATE_DEPLOYMENTS", "agent-panel")
     _fake_incluster(monkeypatch, present=True)
     monkeypatch.setattr(updater, "check", lambda *, http=None: {
         "current": "1.1.0", "latest": "1.1.0", "image_tag": "1.1.0", "available": False})
@@ -362,7 +362,7 @@ def test_apply_no_targets_refuses(monkeypatch):
 
 def test_apply_no_image_tag_refuses(monkeypatch):
     # Канал сообщил о доступном обновлении, но без тега образа: переводить не на что.
-    monkeypatch.setenv("SENTINEL_UPDATE_DEPLOYMENTS", "agent-panel")
+    monkeypatch.setenv("AEGIL_UPDATE_DEPLOYMENTS", "agent-panel")
     _fake_incluster(monkeypatch, present=True)
     monkeypatch.setattr(updater, "check", lambda *, http=None: {
         "current": "1.0.0", "latest": "1.1.0", "image_tag": "", "available": True})
@@ -375,8 +375,8 @@ def test_apply_no_image_tag_refuses(monkeypatch):
 
 def test_apply_partial_failure_reported(monkeypatch):
     # Один деплоймент патчится, другой недоступен: общий ok=False, но успех первого зафиксирован.
-    monkeypatch.setenv("SENTINEL_UPDATE_DEPLOYMENTS", "agent-panel, missing")
-    monkeypatch.setenv("SENTINEL_NAMESPACE", "sentinel")
+    monkeypatch.setenv("AEGIL_UPDATE_DEPLOYMENTS", "agent-panel, missing")
+    monkeypatch.setenv("AEGIL_NAMESPACE", "aegil")
     _fake_incluster(monkeypatch, present=True)
     monkeypatch.setattr(updater, "check", lambda *, http=None: {
         "current": "1.0.0", "latest": "1.1.0", "image_tag": "1.1.0", "available": True})

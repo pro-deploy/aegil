@@ -1,6 +1,6 @@
-{{- $ns := include "kube-sentinel.namespace" . -}}
+{{- $ns := include "aegil.namespace" . -}}
 {{- $sec := .Values.secrets.main -}}
-# Панель агента kube-sentinel. God-mode-поверхность: только ClusterIP, без Ingress, доступ через
+# Панель агента aegil. God-mode-поверхность: только ClusterIP, без Ingress, доступ через
 # port-forward. Вход закрыт токеном оператора из секрета (fail-closed).
 apiVersion: v1
 kind: Service
@@ -8,7 +8,7 @@ metadata:
   name: agent-panel
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   type: ClusterIP
   selector: {app: agent-panel}
@@ -20,7 +20,7 @@ metadata:
   name: agent-panel
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 ---
 # Узкий RBAC панели в наблюдаемом пространстве: деплойменты на чтение и patch (rollout restart),
 # чтение подов, логов и событий, удаление больного пода. Мутации сверх этого недоступны.
@@ -30,7 +30,7 @@ metadata:
   name: agent-panel-deploy
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -48,7 +48,7 @@ metadata:
   name: agent-panel-deploy
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: agent-panel-deploy}
 subjects:
   - {kind: ServiceAccount, name: agent-panel, namespace: {{ $ns }}}
@@ -59,7 +59,7 @@ kind: ClusterRole
 metadata:
   name: {{ $ns }}-agent-panel-nodes-read
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 rules:
   - apiGroups: [""]
     resources: ["nodes", "nodes/proxy", "nodes/stats"]
@@ -70,7 +70,7 @@ kind: ClusterRoleBinding
 metadata:
   name: {{ $ns }}-agent-panel-nodes-read
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $ns }}-agent-panel-nodes-read}
 subjects:
   - {kind: ServiceAccount, name: agent-panel, namespace: {{ $ns }}}
@@ -81,7 +81,7 @@ metadata:
   name: agent-panel
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   replicas: {{ .Values.panel.replicas }}
   selector: {matchLabels: {app: agent-panel}}
@@ -89,11 +89,11 @@ spec:
     metadata:
       labels:
         app: agent-panel
-{{ include "kube-sentinel.labels" . | indent 8 }}
+{{ include "aegil.labels" . | indent 8 }}
     spec:
       serviceAccountName: agent-panel
       enableServiceLinks: false
-{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+{{- include "aegil.imagePullSecrets" . | indent 6 }}
       {{- with .Values.panel.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}
@@ -108,40 +108,40 @@ spec:
       {{- end }}
       containers:
         - name: agent-panel
-          image: {{ include "kube-sentinel.image" (list . "agent-panel") }}
+          image: {{ include "aegil.image" (list . "agent-panel") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports: [{containerPort: 9109}]
           env:
-            - name: SENTINEL_OPERATORS
+            - name: AEGIL_OPERATORS
               valueFrom: {secretKeyRef: {name: {{ $sec.name }}, key: {{ $sec.keys.operators }}}}
-            - name: SENTINEL_NAMESPACE
+            - name: AEGIL_NAMESPACE
               valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
-            - {name: SENTINEL_RCA_URL, value: "http://rca:9107"}
-            - {name: SENTINEL_LLM_PROVIDER, value: {{ .Values.llm.provider | quote }}}
-            - {name: SENTINEL_LLM_MODEL, value: {{ .Values.llm.model | quote }}}
-            - name: SENTINEL_LLM_API_KEY
+            - {name: AEGIL_RCA_URL, value: "http://rca:9107"}
+            - {name: AEGIL_LLM_PROVIDER, value: {{ .Values.llm.provider | quote }}}
+            - {name: AEGIL_LLM_MODEL, value: {{ .Values.llm.model | quote }}}
+            - name: AEGIL_LLM_API_KEY
               valueFrom: {secretKeyRef: {name: {{ $sec.name }}, key: {{ $sec.keys.llmApiKey }}, optional: true}}
-            - {name: SENTINEL_LLM_BASE_URL, value: {{ .Values.llm.baseUrl | quote }}}
-            - {name: SENTINEL_AUTONOMY, value: {{ .Values.autonomy | quote }}}
-            - {name: SENTINEL_RESTART_ALLOWLIST, value: {{ .Values.policy.restartAllowlist | quote }}}
-            - {name: SENTINEL_RESTART_DENYLIST, value: {{ .Values.policy.restartDenylist | quote }}}
-            - {name: SENTINEL_PROTECTED_PATTERNS, value: {{ .Values.policy.protectedPatterns | quote }}}
-            - {name: SENTINEL_NODE_ROLE_LABEL, value: {{ .Values.policy.nodeRoleLabel | quote }}}
-            - {name: SENTINEL_NODEAGENT_TIMEOUT, value: {{ .Values.panel.nodeagentTimeout | quote }}}
-            - name: SENTINEL_NODEAGENT_TOKEN
+            - {name: AEGIL_LLM_BASE_URL, value: {{ .Values.llm.baseUrl | quote }}}
+            - {name: AEGIL_AUTONOMY, value: {{ .Values.autonomy | quote }}}
+            - {name: AEGIL_RESTART_ALLOWLIST, value: {{ .Values.policy.restartAllowlist | quote }}}
+            - {name: AEGIL_RESTART_DENYLIST, value: {{ .Values.policy.restartDenylist | quote }}}
+            - {name: AEGIL_PROTECTED_PATTERNS, value: {{ .Values.policy.protectedPatterns | quote }}}
+            - {name: AEGIL_NODE_ROLE_LABEL, value: {{ .Values.policy.nodeRoleLabel | quote }}}
+            - {name: AEGIL_NODEAGENT_TIMEOUT, value: {{ .Values.panel.nodeagentTimeout | quote }}}
+            - name: AEGIL_NODEAGENT_TOKEN
               valueFrom: {secretKeyRef: {name: {{ $sec.name }}, key: {{ $sec.keys.nodeagentToken }}}}
-            - {name: SENTINEL_LOKI_URL, value: "http://loki:3100"}
-            - {name: SENTINEL_LOKI_QUERY, value: '{namespace="$(SENTINEL_NAMESPACE)"}'}
-            - {name: SENTINEL_GRAFANA_URL, value: "http://grafana:3000"}
-            - {name: SENTINEL_AUDIT, value: "/data/audit.log.jsonl"}
-            - {name: SENTINEL_GUARDS, value: "/data/agent-guards.log.jsonl"}
-            - {name: SENTINEL_INCIDENTS_DIR, value: "/data"}
-            - {name: SENTINEL_INCIDENTS, value: "/data/incidents.log.jsonl"}
-            - {name: SENTINEL_STATE_DIR, value: "/data"}
-            - {name: SENTINEL_MCP_SERVERS, value: {{ .Values.mcp.servers | quote }}}
-            - {name: SENTINEL_VERSION, value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}}
-            - {name: SENTINEL_UPDATE_CHANNEL_URL, value: {{ .Values.update.channelUrl | quote }}}
-            - {name: SENTINEL_UPDATE_DEPLOYMENTS, value: {{ .Values.update.deployments | quote }}}
+            - {name: AEGIL_LOKI_URL, value: "http://loki:3100"}
+            - {name: AEGIL_LOKI_QUERY, value: '{namespace="$(AEGIL_NAMESPACE)"}'}
+            - {name: AEGIL_GRAFANA_URL, value: "http://grafana:3000"}
+            - {name: AEGIL_AUDIT, value: "/data/audit.log.jsonl"}
+            - {name: AEGIL_GUARDS, value: "/data/agent-guards.log.jsonl"}
+            - {name: AEGIL_INCIDENTS_DIR, value: "/data"}
+            - {name: AEGIL_INCIDENTS, value: "/data/incidents.log.jsonl"}
+            - {name: AEGIL_STATE_DIR, value: "/data"}
+            - {name: AEGIL_MCP_SERVERS, value: {{ .Values.mcp.servers | quote }}}
+            - {name: AEGIL_VERSION, value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}}
+            - {name: AEGIL_UPDATE_CHANNEL_URL, value: {{ .Values.update.channelUrl | quote }}}
+            - {name: AEGIL_UPDATE_DEPLOYMENTS, value: {{ .Values.update.deployments | quote }}}
             - name: POD_NAME
               valueFrom: {fieldRef: {fieldPath: metadata.name}}
             - name: NODE_NAME
@@ -168,7 +168,7 @@ metadata:
   name: agent-panel-state
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   accessModes: ["ReadWriteOnce"]
   {{- if .Values.panel.persistence.storageClass }}
@@ -186,7 +186,7 @@ metadata:
   name: agent-panel
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   podSelector: {matchLabels: {app: agent-panel}}
   policyTypes: [Ingress]

@@ -1,4 +1,4 @@
-"""Универсальный каталог симптомов Kubernetes для автономного SRE-агента kube-sentinel.
+"""Универсальный каталог симптомов Kubernetes для автономного SRE-агента aegil.
 
 Каталог домен-агностичен: он не знает и не предполагает имён приложения владельца, а описывает
 нейтральные симптомы, характерные для любого кластера Kubernetes. Каждый детектор чист и
@@ -16,7 +16,7 @@ kubelet, срок сертификата TLS) и возвращает списо
   {"code": "<нейтральный код симптома>", "severity": "critical|high|warning",
    "title": "<нейтральное описание симптома>", "verdict": {...}, "params": {...}}
 
-Пороги выносятся в переменные окружения с единым префиксом ``SENTINEL_`` и имеют нейтральные значения
+Пороги выносятся в переменные окружения с единым префиксом ``AEGIL_`` и имеют нейтральные значения
 по умолчанию, пригодные для произвольного кластера без предварительной калибровки под конкретное
 приложение.
 """
@@ -27,30 +27,30 @@ from datetime import datetime, timedelta, timezone
 
 import k8s
 
-# --- Пороги (переопределяются переменными окружения SENTINEL_, нейтральные значения по умолчанию) ---
+# --- Пороги (переопределяются переменными окружения AEGIL_, нейтральные значения по умолчанию) ---
 
 # Порог числа рестартов пода за окно наблюдения, за которым рестарты трактуются как шторм. Окно по
 # умолчанию один час.
-RESTART_STORM_THRESHOLD = int(os.getenv("SENTINEL_RESTART_STORM_THRESHOLD", "5"))
-RESTART_WINDOW_SECONDS = int(os.getenv("SENTINEL_RESTART_WINDOW_SECONDS", "3600"))
+RESTART_STORM_THRESHOLD = int(os.getenv("AEGIL_RESTART_STORM_THRESHOLD", "5"))
+RESTART_WINDOW_SECONDS = int(os.getenv("AEGIL_RESTART_WINDOW_SECONDS", "3600"))
 
 # Порог длительности ожидания планирования пода (Pending или Unschedulable), за которым ожидание
 # трактуется как затянувшееся. По умолчанию пять минут.
-PENDING_AGE_SECONDS = int(os.getenv("SENTINEL_PENDING_AGE_SECONDS", "300"))
+PENDING_AGE_SECONDS = int(os.getenv("AEGIL_PENDING_AGE_SECONDS", "300"))
 
 # Пороги заполнения файловой системы узла в процентах: предупреждение и критично. Соответствуют
-# смыслу наследных ALERT_DISK_WARN и ALERT_DISK_CRIT, но объявлены здесь под префиксом SENTINEL_ с
+# смыслу наследных ALERT_DISK_WARN и ALERT_DISK_CRIT, но объявлены здесь под префиксом AEGIL_ с
 # нейтральными значениями по умолчанию, потому что каталог симптомов является их владельцем.
-DISK_WARN_PCT = int(os.getenv("SENTINEL_DISK_WARN", "80"))
-DISK_CRIT_PCT = int(os.getenv("SENTINEL_DISK_CRIT", "90"))
+DISK_WARN_PCT = int(os.getenv("AEGIL_DISK_WARN", "80"))
+DISK_CRIT_PCT = int(os.getenv("AEGIL_DISK_CRIT", "90"))
 
 # Порог заполнения памяти узла в процентах (предупреждение). Давление памяти как условие узла
 # (MemoryPressure) обрабатывается отдельно и всегда критичнее процентного порога.
-MEM_WARN_PCT = int(os.getenv("SENTINEL_MEM_WARN", "90"))
+MEM_WARN_PCT = int(os.getenv("AEGIL_MEM_WARN", "90"))
 
 # Пороги остатка срока действия сертификата TLS в сутках: предупреждение и высокая серьёзность.
-TLS_WARN_DAYS = int(os.getenv("SENTINEL_TLS_WARN_DAYS", "14"))
-TLS_HIGH_DAYS = int(os.getenv("SENTINEL_TLS_HIGH_DAYS", "7"))
+TLS_WARN_DAYS = int(os.getenv("AEGIL_TLS_WARN_DAYS", "14"))
+TLS_HIGH_DAYS = int(os.getenv("AEGIL_TLS_HIGH_DAYS", "7"))
 
 # Причины ожидания контейнера, означающие невозможность стартовать образ.
 _IMAGE_PULL_REASONS = ("ImagePullBackOff", "ErrImagePull", "InvalidImageName")
@@ -224,8 +224,8 @@ def check_deploy_unavailable(deployments) -> list:
 
 
 def check_node_disk(nodes, stats_by_node) -> list:
-    """Файловые системы узлов, заполненные выше порогов SENTINEL_DISK_WARN (предупреждение) и
-    SENTINEL_DISK_CRIT (критично) по сводке kubelet. Один алерт на файловую систему узла."""
+    """Файловые системы узлов, заполненные выше порогов AEGIL_DISK_WARN (предупреждение) и
+    AEGIL_DISK_CRIT (критично) по сводке kubelet. Один алерт на файловую систему узла."""
     import status as status_cards
     out = []
     for n in nodes or []:
@@ -245,7 +245,7 @@ def check_node_disk(nodes, stats_by_node) -> list:
 
 
 def check_node_memory(nodes, stats_by_node) -> list:
-    """Узлы, память которых заполнена выше порога SENTINEL_MEM_WARN по сводке kubelet. Отдельно от
+    """Узлы, память которых заполнена выше порога AEGIL_MEM_WARN по сводке kubelet. Отдельно от
     условия узла MemoryPressure: процентный порог срабатывает раньше, чем kubelet выставит давление."""
     import status as status_cards
     out = []
@@ -318,7 +318,7 @@ def check_warning_events(events) -> list:
 
 
 def check_tls_expiry(tls_days) -> list:
-    """Истечение срока действия сертификата TLS для хоста SENTINEL_TLS_HOST. Значение приходит из
+    """Истечение срока действия сертификата TLS для хоста AEGIL_TLS_HOST. Значение приходит из
     app_adapter.tls_days_left (проверка не чаще раза в сутки). Если хост не задан, значение None и
     детектор молчит."""
     if tls_days is None or tls_days > TLS_WARN_DAYS:

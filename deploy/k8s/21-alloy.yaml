@@ -1,18 +1,18 @@
 # Агент сбора логов Grafana Alloy. Забирает логи подов через Kubernetes API, обогащает
 # метками namespace/pod/node/container/app, маскирует персональные данные до отправки
 # (почта, телефоны) и пишет в Loki. Сбор ограничен наблюдаемым пространством имён
-# (по умолчанию sentinel), чтобы не забирать логи всех пространств чужого кластера.
+# (по умолчанию aegil), чтобы не забирать логи всех пространств чужого кластера.
 # Одна реплика.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: alloy
-  namespace: sentinel
+  namespace: aegil
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: sentinel-alloy
+  name: aegil-alloy
 rules:
   - apiGroups: [""]
     resources: [pods, pods/log, namespaces, nodes]
@@ -21,30 +21,30 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: sentinel-alloy
+  name: aegil-alloy
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: sentinel-alloy
+  name: aegil-alloy
 subjects:
   - kind: ServiceAccount
     name: alloy
-    namespace: sentinel
+    namespace: aegil
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: alloy-config
-  namespace: sentinel
+  namespace: aegil
 data:
   config.alloy: |
-    // Обнаружение подов ограничено наблюдаемым пространством имён (по умолчанию sentinel).
+    // Обнаружение подов ограничено наблюдаемым пространством имён (по умолчанию aegil).
     // Без этого ограничения Alloy забирал бы логи всех пространств чужого кластера. Имя
     // пространства параметризуется: в чарте оно подставляется из значения targetNamespace.
     discovery.kubernetes "pods" {
       role = "pod"
       namespaces {
-        names = ["sentinel"]
+        names = ["aegil"]
       }
     }
 
@@ -101,7 +101,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: alloy
-  namespace: sentinel
+  namespace: aegil
 spec:
   replicas: 1
   strategy: {type: Recreate}

@@ -1,4 +1,4 @@
-"""Тесты node-agent продукта kube-sentinel. Собираются стандартным сборщиком pytest, сети не требуют.
+"""Тесты node-agent продукта aegil. Собираются стандартным сборщиком pytest, сети не требуют.
 
 Запуск: cd services/node-agent && python3 -m pytest -q
 
@@ -23,9 +23,9 @@ from unittest import mock
 import pytest
 
 # Обеспечиваем предсказуемое имя узла и секрет ДО импорта модуля: значения читаются на импорте.
-# Единый префикс продукта SENTINEL_.
-os.environ.setdefault("SENTINEL_NODE_NAME", "test-node")
-os.environ.setdefault("SENTINEL_NODEAGENT_TOKEN", "s3cr3t-token")
+# Единый префикс продукта AEGIL_.
+os.environ.setdefault("AEGIL_NODE_NAME", "test-node")
+os.environ.setdefault("AEGIL_NODEAGENT_TOKEN", "s3cr3t-token")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import app  # noqa: E402
@@ -157,15 +157,15 @@ def test_child_environment_is_scrubbed_of_agent_secrets():
     # Дочерний процесс НЕ должен получить секрет агента в окружении: иначе исполненная команда
     # прочитает его через /proc/self/environ.
     fake = _fake_popen(returncode=0, stdout=b"", stderr=b"")
-    with mock.patch.dict(os.environ, {"SENTINEL_NODEAGENT_TOKEN": "s3cr3t-token", "PATH": "/usr/bin"}):
+    with mock.patch.dict(os.environ, {"AEGIL_NODEAGENT_TOKEN": "s3cr3t-token", "PATH": "/usr/bin"}):
         with mock.patch.object(app.subprocess, "Popen", return_value=fake) as popen:
             app.run_host_command(["df"], 30)
     _, called_kwargs = popen.call_args
     env = called_kwargs.get("env")
     assert env is not None, "окружение дочернего процесса должно задаваться явно (env=), не наследоваться"
-    assert "SENTINEL_NODEAGENT_TOKEN" not in env
+    assert "AEGIL_NODEAGENT_TOKEN" not in env
     # Ни одна переменная с префиксом продукта не просачивается в дочерний процесс.
-    assert not any(k.startswith("SENTINEL_") for k in env)
+    assert not any(k.startswith("AEGIL_") for k in env)
     # PATH при этом сохранён, чтобы утилиты находились.
     assert env.get("PATH") == "/usr/bin"
 

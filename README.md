@@ -1,4 +1,4 @@
-# kube-sentinel
+# Aegil
 
 Автономный SRE и девопс-агент для Kubernetes с детерминированным разбором логов. Продукт
 подключается к любому кластеру и к системам логирования и мониторинга, сам наблюдает состояние,
@@ -77,11 +77,11 @@ REGISTRY=registry.example.com:5000 deploy/build.sh
 платформы и требуют обзора). Создайте секреты панели и node-agent:
 
 ```bash
-kubectl -n sentinel create secret generic panel-secrets \
+kubectl -n aegil create secret generic panel-secrets \
   --from-literal=PANEL_OPERATORS="admin:$(openssl rand -hex 24)"
 TOK=$(openssl rand -hex 24)
-kubectl -n sentinel create secret generic nodeagent-secrets --from-literal=NODEAGENT_TOKEN="$TOK"
-kubectl -n sentinel patch secret panel-secrets --type merge \
+kubectl -n aegil create secret generic nodeagent-secrets --from-literal=NODEAGENT_TOKEN="$TOK"
+kubectl -n aegil patch secret panel-secrets --type merge \
   -p "{\"stringData\":{\"NODEAGENT_TOKEN\":\"$TOK\"}}"
 kubectl apply -f deploy/k8s/
 ```
@@ -89,7 +89,7 @@ kubectl apply -f deploy/k8s/
 Панель наружу не торчит. Доступ через туннель:
 
 ```bash
-kubectl -n sentinel port-forward svc/agent-panel 9109:9109
+kubectl -n aegil port-forward svc/agent-panel 9109:9109
 ```
 
 и браузером на http://127.0.0.1:9109, вход токеном оператора.

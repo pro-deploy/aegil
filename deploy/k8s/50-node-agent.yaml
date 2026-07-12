@@ -1,4 +1,4 @@
-# Привилегированный узловой агент (node-agent) продукта kube-sentinel.
+# Привилегированный узловой агент (node-agent) продукта aegil.
 # DaemonSet поднимает по одному поду на каждом узле кластера. Под входит в пространство имён хоста
 # через nsenter (см. securityContext ниже) и даёт панели агента возможность исполнять команды
 # эксплуатации на самих узлах (чистка диска, prune образов docker и containerd, df, top, снятие
@@ -10,9 +10,9 @@
 # ПЕРЕД ПРИМЕНЕНИЕМ создать секрет с общим токеном доступа в пространстве имён продукта. Тот же токен
 # обязателен и панели, чтобы она предъявляла его в заголовке X-NodeAgent-Token каждого запроса
 # (иначе /run отвечает 401 и ничего не исполняет):
-#   kubectl -n sentinel create secret generic nodeagent-secrets \
-#     --from-literal=SENTINEL_NODEAGENT_TOKEN=$(openssl rand -hex 24)
-# Тот же токен положить в секрет панели под ключом SENTINEL_NODEAGENT_TOKEN.
+#   kubectl -n aegil create secret generic nodeagent-secrets \
+#     --from-literal=AEGIL_NODEAGENT_TOKEN=$(openssl rand -hex 24)
+# Тот же токен положить в секрет панели под ключом AEGIL_NODEAGENT_TOKEN.
 #
 # Селектор узлов и допуски (tolerations) параметризованы плейсхолдерами и подставляются под
 # конкретный кластер при установке (например через Helm). По умолчанию DaemonSet встаёт на все
@@ -22,10 +22,10 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: node-agent
-  namespace: sentinel
+  namespace: aegil
   labels:
     app.kubernetes.io/name: node-agent
-    app.kubernetes.io/part-of: kube-sentinel
+    app.kubernetes.io/part-of: aegil
 spec:
   selector: {matchLabels: {app: node-agent}}
   template:
@@ -33,7 +33,7 @@ spec:
       labels:
         app: node-agent
         app.kubernetes.io/name: node-agent
-        app.kubernetes.io/part-of: kube-sentinel
+        app.kubernetes.io/part-of: aegil
     spec:
       # Токен служебной учётной записи не монтируется: привилегированному поду с узловым доступом не
       # нужен токен default-SA, а его наличие лишь расширяет поверхность (кража токена из-под root).
@@ -50,7 +50,7 @@ spec:
       # tolerations: []
       containers:
         - name: node-agent
-          image: REGISTRY_PLACEHOLDER/kube-sentinel/node-agent:VERSION_PLACEHOLDER
+          image: REGISTRY_PLACEHOLDER/aegil/node-agent:VERSION_PLACEHOLDER
           imagePullPolicy: IfNotPresent
           securityContext:
             # Полного privileged: true намеренно избегаем. Для входа через nsenter в пространства
@@ -72,12 +72,12 @@ spec:
           ports: [{containerPort: 9110, name: http}]
           env:
             # Имя узла через downward API: возвращается в ответах и попадает в логи и аудит.
-            - name: SENTINEL_NODE_NAME
+            - name: AEGIL_NODE_NAME
               valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
             # Общий секрет доступа: без него /run fail-closed отклоняет все запросы.
-            - name: SENTINEL_NODEAGENT_TOKEN
-              valueFrom: {secretKeyRef: {name: nodeagent-secrets, key: SENTINEL_NODEAGENT_TOKEN}}
-            - {name: SENTINEL_NODEAGENT_PORT, value: "9110"}
+            - name: AEGIL_NODEAGENT_TOKEN
+              valueFrom: {secretKeyRef: {name: nodeagent-secrets, key: AEGIL_NODEAGENT_TOKEN}}
+            - {name: AEGIL_NODEAGENT_PORT, value: "9110"}
           readinessProbe:
             httpGet: {path: /health, port: 9110}
             initialDelaySeconds: 5
@@ -94,10 +94,10 @@ apiVersion: v1
 kind: Service
 metadata:
   name: node-agent
-  namespace: sentinel
+  namespace: aegil
   labels:
     app.kubernetes.io/name: node-agent
-    app.kubernetes.io/part-of: kube-sentinel
+    app.kubernetes.io/part-of: aegil
 spec:
   clusterIP: None
   selector: {app: node-agent}
@@ -113,10 +113,10 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: node-agent-allow-panel
-  namespace: sentinel
+  namespace: aegil
   labels:
     app.kubernetes.io/name: node-agent
-    app.kubernetes.io/part-of: kube-sentinel
+    app.kubernetes.io/part-of: aegil
 spec:
   podSelector:
     matchLabels: {app: node-agent}

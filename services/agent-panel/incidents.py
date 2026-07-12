@@ -22,8 +22,8 @@ resolved_operator (оператор устранил кнопкой «Решит
 upsert из такта агента и из обработчика теряли бы данные и перемешивали строки в журнале.
 
 Каталог журнала выносится за пределы рабочего дерева агента на постоянный том (по умолчанию
-каталог данных SENTINEL_STATE_DIR, обычно /data; конкретные пути переопределяются переменными
-SENTINEL_INCIDENTS и SENTINEL_INCIDENTS_DIR).
+каталог данных AEGIL_STATE_DIR, обычно /data; конкретные пути переопределяются переменными
+AEGIL_INCIDENTS и AEGIL_INCIDENTS_DIR).
 """
 from __future__ import annotations
 
@@ -38,16 +38,16 @@ from pathlib import Path
 
 def _state_dir() -> Path:
     """Каталог данных вне рабочего дерева. По умолчанию /data (постоянный том), переопределяется
-    переменной SENTINEL_STATE_DIR."""
-    return Path(os.getenv("SENTINEL_STATE_DIR", "/data"))
+    переменной AEGIL_STATE_DIR."""
+    return Path(os.getenv("AEGIL_STATE_DIR", "/data"))
 
 
 # Старый единый журнал (совместимость): читается при старте, если существует. Новые события
-# в него не пишутся. Явный SENTINEL_INCIDENTS имеет приоритет, иначе файл в каталоге данных.
-STORE_PATH = Path(os.getenv("SENTINEL_INCIDENTS") or str(_state_dir() / "incidents.log.jsonl"))
-# Каталог помесячных журналов. Явный SENTINEL_INCIDENTS_DIR имеет приоритет, иначе каталог
+# в него не пишутся. Явный AEGIL_INCIDENTS имеет приоритет, иначе файл в каталоге данных.
+STORE_PATH = Path(os.getenv("AEGIL_INCIDENTS") or str(_state_dir() / "incidents.log.jsonl"))
+# Каталог помесячных журналов. Явный AEGIL_INCIDENTS_DIR имеет приоритет, иначе каталог
 # рядом со старым единым файлом.
-STORE_DIR = Path(os.getenv("SENTINEL_INCIDENTS_DIR") or str(STORE_PATH.parent))
+STORE_DIR = Path(os.getenv("AEGIL_INCIDENTS_DIR") or str(STORE_PATH.parent))
 
 # Реентерабельная блокировка на весь модуль: сериализует изменение разделяемых словарей групп и
 # дозапись в журнал между потоком автопилота и обработчиками FastAPI. Реентерабельность нужна,

@@ -5,7 +5,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: otel-collector-config
-  namespace: sentinel
+  namespace: aegil
 data:
   config.yaml: |
     receivers:
@@ -44,7 +44,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: otel-collector
-  namespace: sentinel
+  namespace: aegil
 spec:
   selector: {app: otel-collector}
   ports:
@@ -55,7 +55,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: otel-collector
-  namespace: sentinel
+  namespace: aegil
 spec:
   replicas: 1
   selector: {matchLabels: {app: otel-collector}}

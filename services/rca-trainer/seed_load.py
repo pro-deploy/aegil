@@ -1,5 +1,5 @@
 """Засев размеченных примеров маршрутизатора сервиса разбора первопричин
-kube-sentinel в таблицу rca_route_examples. Инструмент читает сидовый датасет
+aegil в таблицу rca_route_examples. Инструмент читает сидовый датасет
 seed_dataset.jsonl (по одной JSON-записи на строку с полями text и labels) и
 вставляет каждый пример теми же полями, что пишет recorder боевого каскада
 (services/rca/store.py): query, labels, source. Отличие лишь в источнике: у сида
@@ -14,7 +14,7 @@ source равен seed, а trained_at остаётся NULL, поэтому тр
 делает засев безопасным при повторных и параллельных запусках: конфликт разрешает
 сама база атомарно.
 
-Подключение к Postgres берётся из переменной окружения SENTINEL_POSTGRES_DSN, той же,
+Подключение к Postgres берётся из переменной окружения AEGIL_POSTGRES_DSN, той же,
 что использует тренер train.py и recorder store.py, поэтому засев работает в том же
 кластерном Postgres. Способ открытия соединения инъектируется через параметр connect,
 что позволяет проверять логику модульно без сети, подменяя соединение заглушкой.
@@ -26,9 +26,9 @@ import os
 
 BRANCHES = ("logs", "alerts", "network", "anomalies", "dependencies", "releases")
 
-DSN = os.getenv("SENTINEL_POSTGRES_DSN", "")
+DSN = os.getenv("AEGIL_POSTGRES_DSN", "")
 SEED_PATH = os.getenv(
-    "SENTINEL_SEED_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed_dataset.jsonl"))
+    "AEGIL_SEED_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed_dataset.jsonl"))
 SEED_SOURCE = "seed"
 
 # Определение таблицы и уникального индекса. Схема создаётся идемпотентно, чтобы засев
@@ -114,7 +114,7 @@ def seed(path: str = SEED_PATH, dsn: str = DSN, connect=None) -> dict:
 
 def main() -> None:
     if not DSN:
-        print(json.dumps({"msg": "skip: no SENTINEL_POSTGRES_DSN"}, ensure_ascii=False), flush=True)
+        print(json.dumps({"msg": "skip: no AEGIL_POSTGRES_DSN"}, ensure_ascii=False), flush=True)
         return
     summary = seed()
     print(json.dumps({"msg": "seed done", **summary}, ensure_ascii=False), flush=True)

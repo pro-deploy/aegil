@@ -1,4 +1,4 @@
-"""Наблюдаемость инференса языковой модели (слой LLMOps) для kube-sentinel.
+"""Наблюдаемость инференса языковой модели (слой LLMOps) для aegil.
 
 Автономный агент опирается на языковую модель, поэтому сама модель это часть
 эксплуатируемой системы, и её надо наблюдать так же строго, как сервисы. Модуль
@@ -9,14 +9,14 @@
 токены, часто ли отказывает провайдер.
 
 Состояние персистентно и живёт вне рабочего дерева агента (каталог данных
-SENTINEL_STATE_DIR, файл переопределяется переменной SENTINEL_LLM_METRICS), как и прочие
+AEGIL_STATE_DIR, файл переопределяется переменной AEGIL_LLM_METRICS), как и прочие
 журналы продукта, чтобы статистика переживала перезапуск и не попадала под удаление
 детерминированным классификатором. Модуль потокобезопасен: обработчики FastAPI и
 автопилот пишут метрики параллельно под единой реентерабельной блокировкой. При
 недоступности каталога данных модуль откатывается на временный каталог и не мешает работе.
 
-Стоимость токенов настраивается окружением (SENTINEL_LLM_COST_PROMPT и
-SENTINEL_LLM_COST_COMPLETION, цена за тысячу токенов); для локальной модели она нулевая,
+Стоимость токенов настраивается окружением (AEGIL_LLM_COST_PROMPT и
+AEGIL_LLM_COST_COMPLETION, цена за тысячу токенов); для локальной модели она нулевая,
 и тогда наблюдается только скорость и надёжность, а не деньги.
 """
 from __future__ import annotations
@@ -32,8 +32,8 @@ _LOCK = threading.RLock()
 _BUFFER: list = []          # окно последних записей в памяти
 _LOADED = False
 
-MAX_RECORDS = int(os.getenv("SENTINEL_LLM_METRICS_MAX", "2000"))
-RETENTION_SECONDS = int(os.getenv("SENTINEL_LLM_METRICS_RETENTION_SECONDS", str(24 * 3600)))
+MAX_RECORDS = int(os.getenv("AEGIL_LLM_METRICS_MAX", "2000"))
+RETENTION_SECONDS = int(os.getenv("AEGIL_LLM_METRICS_RETENTION_SECONDS", str(24 * 3600)))
 
 
 def _cost_per_1k(name: str) -> float:
@@ -44,10 +44,10 @@ def _cost_per_1k(name: str) -> float:
 
 
 def _path() -> Path:
-    explicit = os.getenv("SENTINEL_LLM_METRICS")
+    explicit = os.getenv("AEGIL_LLM_METRICS")
     if explicit:
         return Path(explicit)
-    return Path(os.getenv("SENTINEL_STATE_DIR", "/data")) / "llm-metrics.log.jsonl"
+    return Path(os.getenv("AEGIL_STATE_DIR", "/data")) / "llm-metrics.log.jsonl"
 
 
 def _writable_path() -> Path:
@@ -56,7 +56,7 @@ def _writable_path() -> Path:
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
     except OSError:
-        return Path(tempfile.gettempdir()) / "sentinel-llm-metrics.log.jsonl"
+        return Path(tempfile.gettempdir()) / "aegil-llm-metrics.log.jsonl"
 
 
 def _load(now: float) -> None:
@@ -85,8 +85,8 @@ def record(model: str, latency_ms: float, prompt_tokens: int = 0, completion_tok
     ценам за тысячу токенов из окружения (нуль для локальной модели)."""
     now = time.time() if now is None else now
     pt, ct = int(prompt_tokens or 0), int(completion_tokens or 0)
-    cost = (pt / 1000.0) * _cost_per_1k("SENTINEL_LLM_COST_PROMPT") + \
-           (ct / 1000.0) * _cost_per_1k("SENTINEL_LLM_COST_COMPLETION")
+    cost = (pt / 1000.0) * _cost_per_1k("AEGIL_LLM_COST_PROMPT") + \
+           (ct / 1000.0) * _cost_per_1k("AEGIL_LLM_COST_COMPLETION")
     rec = {"ts": round(now, 3), "model": str(model or ""), "latency_ms": round(float(latency_ms or 0), 1),
            "prompt_tokens": pt, "completion_tokens": ct, "cost": round(cost, 6),
            "ok": bool(ok), "error": str(error or "")[:200]}

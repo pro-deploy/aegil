@@ -1,5 +1,5 @@
 {{- if and .Values.rca.enabled .Values.rcaTrainer.enabled }}
-{{- $ns := include "kube-sentinel.namespace" . -}}
+{{- $ns := include "aegil.namespace" . -}}
 {{- $sec := .Values.secrets.main -}}
 # Тренер классификатора маршрутизации (активное обучение). CronJob, обучение на процессоре.
 # Читает примеры из Postgres, выгружает обученную модель в S3.
@@ -9,7 +9,7 @@ metadata:
   name: rca-trainer
   namespace: {{ $ns }}
   labels:
-{{ include "kube-sentinel.labels" . | indent 4 }}
+{{ include "aegil.labels" . | indent 4 }}
 spec:
   schedule: {{ .Values.rcaTrainer.schedule | quote }}
   concurrencyPolicy: Forbid
@@ -22,7 +22,7 @@ spec:
         spec:
           automountServiceAccountToken: false
           restartPolicy: Never
-{{- include "kube-sentinel.imagePullSecrets" . | indent 10 }}
+{{- include "aegil.imagePullSecrets" . | indent 10 }}
           {{- with .Values.rcaTrainer.nodeSelector }}
           nodeSelector:
 {{ toYaml . | indent 12 }}
@@ -37,22 +37,22 @@ spec:
           {{- end }}
           containers:
             - name: rca-trainer
-              image: {{ include "kube-sentinel.image" (list . "rca-trainer") }}
+              image: {{ include "aegil.image" (list . "rca-trainer") }}
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               env:
-                - name: SENTINEL_POSTGRES_DSN
+                - name: AEGIL_POSTGRES_DSN
                   valueFrom: {secretKeyRef: {name: {{ $sec.name }}, key: {{ $sec.keys.postgresDsn }}}}
-                - name: SENTINEL_S3_ENDPOINT
+                - name: AEGIL_S3_ENDPOINT
                   valueFrom: {secretKeyRef: {name: {{ $sec.name }}, key: {{ $sec.keys.s3Endpoint }}}}
-                - name: SENTINEL_S3_ACCESS_KEY
+                - name: AEGIL_S3_ACCESS_KEY
                   valueFrom: {secretKeyRef: {name: {{ $sec.name }}, key: {{ $sec.keys.s3AccessKey }}}}
-                - name: SENTINEL_S3_SECRET_KEY
+                - name: AEGIL_S3_SECRET_KEY
                   valueFrom: {secretKeyRef: {name: {{ $sec.name }}, key: {{ $sec.keys.s3SecretKey }}}}
-                - name: SENTINEL_S3_BUCKET
+                - name: AEGIL_S3_BUCKET
                   valueFrom: {secretKeyRef: {name: {{ $sec.name }}, key: {{ $sec.keys.s3Bucket }}}}
-                - {name: SENTINEL_TRAIN_DEVICE, value: {{ .Values.rcaTrainer.trainDevice | quote }}}
-                - {name: SENTINEL_TRAIN_MIN_NEW, value: {{ .Values.rcaTrainer.trainMinNew | quote }}}
-                - {name: SENTINEL_MODEL_KEY_PREFIX, value: {{ .Values.rca.modelKeyPrefix | quote }}}
+                - {name: AEGIL_TRAIN_DEVICE, value: {{ .Values.rcaTrainer.trainDevice | quote }}}
+                - {name: AEGIL_TRAIN_MIN_NEW, value: {{ .Values.rcaTrainer.trainMinNew | quote }}}
+                - {name: AEGIL_MODEL_KEY_PREFIX, value: {{ .Values.rca.modelKeyPrefix | quote }}}
               resources:
 {{ toYaml .Values.rcaTrainer.resources | indent 16 }}
 {{- end }}

@@ -10,7 +10,7 @@
 Честность применимости сохранена: детектор применим только тогда, когда соответствующий
 сигнал реально пришёл из хранилища метрик. Если метрик нет (present=False) или конкретный
 сигнал отсутствует, детектор не выдаётся за рабочий и в скоринге не участвует. Пороги
-некалиброванные, нейтральные, настраиваются окружением с префиксом SENTINEL_.
+некалиброванные, нейтральные, настраиваются окружением с префиксом AEGIL_.
 """
 from __future__ import annotations
 
@@ -25,26 +25,26 @@ def _f(name: str, default: float) -> float:
 
 
 # Пороги.
-LATENCY_P95_MS = _f("SENTINEL_RCA_M_LATENCY_P95_MS", 1000.0)
-SATURATION = _f("SENTINEL_RCA_M_SATURATION", 0.9)
-METRIC_ERROR_RATE = _f("SENTINEL_RCA_M_ERROR_RATE", 0.05)
-TRAFFIC_DROP_RATIO = _f("SENTINEL_RCA_M_TRAFFIC_DROP_RATIO", 0.3)
-THROTTLING = _f("SENTINEL_RCA_M_THROTTLING", 0.25)      # доля придушенных периодов процессора
-DISK_USAGE = _f("SENTINEL_RCA_M_DISK_USAGE", 0.9)       # доля заполнения файловой системы или тома
-PENDING_MIN = _f("SENTINEL_RCA_M_PENDING_MIN", 1.0)     # число подов в Pending, с которого тревога
-NET_ERRORS = _f("SENTINEL_RCA_M_NET_ERRORS", 1.0)       # темп сетевых ошибок в секунду
+LATENCY_P95_MS = _f("AEGIL_RCA_M_LATENCY_P95_MS", 1000.0)
+SATURATION = _f("AEGIL_RCA_M_SATURATION", 0.9)
+METRIC_ERROR_RATE = _f("AEGIL_RCA_M_ERROR_RATE", 0.05)
+TRAFFIC_DROP_RATIO = _f("AEGIL_RCA_M_TRAFFIC_DROP_RATIO", 0.3)
+THROTTLING = _f("AEGIL_RCA_M_THROTTLING", 0.25)      # доля придушенных периодов процессора
+DISK_USAGE = _f("AEGIL_RCA_M_DISK_USAGE", 0.9)       # доля заполнения файловой системы или тома
+PENDING_MIN = _f("AEGIL_RCA_M_PENDING_MIN", 1.0)     # число подов в Pending, с которого тревога
+NET_ERRORS = _f("AEGIL_RCA_M_NET_ERRORS", 1.0)       # темп сетевых ошибок в секунду
 
 # Веса как отношения правдоподобия при срабатывании.
-W_LATENCY = _f("SENTINEL_RCA_M_W_LATENCY", 5.0)
-W_SATURATION = _f("SENTINEL_RCA_M_W_SATURATION", 5.0)
-W_METRIC_ERROR = _f("SENTINEL_RCA_M_W_ERROR", 6.0)
-W_TRAFFIC = _f("SENTINEL_RCA_M_W_TRAFFIC", 4.0)
-W_DISK = _f("SENTINEL_RCA_M_W_DISK", 6.0)
-W_NODE = _f("SENTINEL_RCA_M_W_NODE", 7.0)
-W_SCHEDULE = _f("SENTINEL_RCA_M_W_SCHEDULE", 4.0)
-W_OOM = _f("SENTINEL_RCA_M_W_OOM", 6.0)
-W_NETWORK = _f("SENTINEL_RCA_M_W_NETWORK", 4.0)
-LR_ABSENT = _f("SENTINEL_RCA_M_LR_ABSENT", 0.7)
+W_LATENCY = _f("AEGIL_RCA_M_W_LATENCY", 5.0)
+W_SATURATION = _f("AEGIL_RCA_M_W_SATURATION", 5.0)
+W_METRIC_ERROR = _f("AEGIL_RCA_M_W_ERROR", 6.0)
+W_TRAFFIC = _f("AEGIL_RCA_M_W_TRAFFIC", 4.0)
+W_DISK = _f("AEGIL_RCA_M_W_DISK", 6.0)
+W_NODE = _f("AEGIL_RCA_M_W_NODE", 7.0)
+W_SCHEDULE = _f("AEGIL_RCA_M_W_SCHEDULE", 4.0)
+W_OOM = _f("AEGIL_RCA_M_W_OOM", 6.0)
+W_NETWORK = _f("AEGIL_RCA_M_W_NETWORK", 4.0)
+LR_ABSENT = _f("AEGIL_RCA_M_LR_ABSENT", 0.7)
 
 
 def _m(mid, name, fired, lr, group, evidence="", applicable=True, lr_absent=None):

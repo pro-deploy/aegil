@@ -4,7 +4,7 @@
 """
 import os
 
-os.environ.setdefault("SENTINEL_LLM_API_KEY", "test-key")
+os.environ.setdefault("AEGIL_LLM_API_KEY", "test-key")
 
 import llm
 from llm import ToolCall, Turn

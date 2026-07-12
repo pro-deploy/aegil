@@ -22,7 +22,7 @@
 
 Пороги и веса объявлены калибруемыми, но размеченного набора инцидентов для
 калибровки пока нет, поэтому значения по умолчанию нейтральные и заданы через
-окружение с префиксом SENTINEL_. Это честный факт: калибровки нет, значения не
+окружение с префиксом AEGIL_. Это честный факт: калибровки нет, значения не
 подогнаны под данные.
 """
 from __future__ import annotations
@@ -47,26 +47,26 @@ def _i(name: str, default: int) -> int:
 
 
 # Пороги (некалиброванные нейтральные значения, настраиваются окружением).
-ERROR_RATE_SPIKE = _f("SENTINEL_RCA_ERROR_RATE_SPIKE", 0.2)
-STATUS_5XX_SHARE = _f("SENTINEL_RCA_STATUS_5XX_SHARE", 0.1)
-BLAST_MIN = _i("SENTINEL_RCA_BLAST_MIN", 3)
-ERROR_GROWTH_RATIO = _f("SENTINEL_RCA_ERROR_GROWTH_RATIO", 1.5)
-MIN_ERRORS = _i("SENTINEL_RCA_MIN_ERRORS", 3)
-MIN_ERROR_RATE = _f("SENTINEL_RCA_MIN_ERROR_RATE", 0.05)
+ERROR_RATE_SPIKE = _f("AEGIL_RCA_ERROR_RATE_SPIKE", 0.2)
+STATUS_5XX_SHARE = _f("AEGIL_RCA_STATUS_5XX_SHARE", 0.1)
+BLAST_MIN = _i("AEGIL_RCA_BLAST_MIN", 3)
+ERROR_GROWTH_RATIO = _f("AEGIL_RCA_ERROR_GROWTH_RATIO", 1.5)
+MIN_ERRORS = _i("AEGIL_RCA_MIN_ERRORS", 3)
+MIN_ERROR_RATE = _f("AEGIL_RCA_MIN_ERROR_RATE", 0.05)
 
 # Веса детекторов как отношения правдоподобия при срабатывании (lr) и при отсутствии
 # сигнала у применимого детектора (lr_absent, меньше единицы).
-W_SPIKE = _f("SENTINEL_RCA_W_SPIKE", 8.0)
-W_NETWORK = _f("SENTINEL_RCA_W_NETWORK", 7.0)
-W_NEW_PATTERN = _f("SENTINEL_RCA_W_NEW_PATTERN", 3.0)
-W_GROWTH = _f("SENTINEL_RCA_W_GROWTH", 4.0)
-W_ALERT = _f("SENTINEL_RCA_W_ALERT", 5.0)
-W_DEPLOY = _f("SENTINEL_RCA_W_DEPLOY", 3.8)
-W_5XX = _f("SENTINEL_RCA_W_5XX", 6.0)
-W_BLAST = _f("SENTINEL_RCA_W_BLAST", 4.0)
-W_GAP = _f("SENTINEL_RCA_W_GAP", 5.0)
-W_SILENCE = _f("SENTINEL_RCA_W_SILENCE", 5.0)
-LR_ABSENT = _f("SENTINEL_RCA_LR_ABSENT", 0.6)
+W_SPIKE = _f("AEGIL_RCA_W_SPIKE", 8.0)
+W_NETWORK = _f("AEGIL_RCA_W_NETWORK", 7.0)
+W_NEW_PATTERN = _f("AEGIL_RCA_W_NEW_PATTERN", 3.0)
+W_GROWTH = _f("AEGIL_RCA_W_GROWTH", 4.0)
+W_ALERT = _f("AEGIL_RCA_W_ALERT", 5.0)
+W_DEPLOY = _f("AEGIL_RCA_W_DEPLOY", 3.8)
+W_5XX = _f("AEGIL_RCA_W_5XX", 6.0)
+W_BLAST = _f("AEGIL_RCA_W_BLAST", 4.0)
+W_GAP = _f("AEGIL_RCA_W_GAP", 5.0)
+W_SILENCE = _f("AEGIL_RCA_W_SILENCE", 5.0)
+LR_ABSENT = _f("AEGIL_RCA_LR_ABSENT", 0.6)
 
 # Пороги временных детекторов. Перерыв в логах требует одновременно существенного
 # объёма записей, крупного разрыва относительно всей протяжённости окна и относительно
@@ -75,13 +75,13 @@ LR_ABSENT = _f("SENTINEL_RCA_LR_ABSENT", 0.6)
 # сервиса и его тишины на протяжении заметной доли окна к его концу. Демпфер
 # восстановления требует заметного числа ошибок в ранней половине окна и их резкого
 # спада в поздней. Значения некалиброванные, консервативные, настраиваются окружением.
-GAP_MIN_LINES = _i("SENTINEL_RCA_GAP_MIN_LINES", 8)
-GAP_SPAN_RATIO = _f("SENTINEL_RCA_GAP_SPAN_RATIO", 0.3)
-GAP_MEDIAN_MULT = _f("SENTINEL_RCA_GAP_MEDIAN_MULT", 8.0)
-SILENCE_MIN_LINES = _i("SENTINEL_RCA_SILENCE_MIN_LINES", 5)
-SILENCE_TAIL_FRAC = _f("SENTINEL_RCA_SILENCE_TAIL_FRAC", 0.5)
-RECOVERY_MIN_ERRORS = _i("SENTINEL_RCA_RECOVERY_MIN_ERRORS", 3)
-RECOVERY_DROP_RATIO = _f("SENTINEL_RCA_RECOVERY_DROP_RATIO", 0.3)
+GAP_MIN_LINES = _i("AEGIL_RCA_GAP_MIN_LINES", 8)
+GAP_SPAN_RATIO = _f("AEGIL_RCA_GAP_SPAN_RATIO", 0.3)
+GAP_MEDIAN_MULT = _f("AEGIL_RCA_GAP_MEDIAN_MULT", 8.0)
+SILENCE_MIN_LINES = _i("AEGIL_RCA_SILENCE_MIN_LINES", 5)
+SILENCE_TAIL_FRAC = _f("AEGIL_RCA_SILENCE_TAIL_FRAC", 0.5)
+RECOVERY_MIN_ERRORS = _i("AEGIL_RCA_RECOVERY_MIN_ERRORS", 3)
+RECOVERY_DROP_RATIO = _f("AEGIL_RCA_RECOVERY_DROP_RATIO", 0.3)
 
 # События, толкуемые как релиз или изменение (домен-агностично: любое из синонимов).
 DEPLOY_EVENTS = ("deploy", "release", "rollout", "rollback", "apply", "helm", "upgrade")

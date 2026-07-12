@@ -1,7 +1,7 @@
-# Пространство имён продукта. Все компоненты kube-sentinel живут здесь. Имя можно сменить, тогда
-# согласуйте его во всех манифестах (namespace); переменная SENTINEL_NAMESPACE у панели и RCA
+# Пространство имён продукта. Все компоненты aegil живут здесь. Имя можно сменить, тогда
+# согласуйте его во всех манифестах (namespace); переменная AEGIL_NAMESPACE у панели и RCA
 # заполняется автоматически из downward API (fieldRef metadata.namespace).
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: sentinel
+  name: aegil

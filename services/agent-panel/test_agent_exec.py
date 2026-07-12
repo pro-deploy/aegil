@@ -9,7 +9,7 @@ destructive уходит в отложенное подтверждение); ob
 """
 import os
 
-os.environ.setdefault("SENTINEL_LLM_API_KEY", "test-key")
+os.environ.setdefault("AEGIL_LLM_API_KEY", "test-key")
 
 import pytest
 
