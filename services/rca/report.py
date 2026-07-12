@@ -1,6 +1,6 @@
-"""Формулировка отчёта на естественном языке (ADR-0032, Часть B; книга Биркина,
-узел answer_finalizer). По центральному принципу языковая модель отвечает только за
-язык: она облекает УЖЕ посчитанный детерминированный вердикт в читаемый отчёт и
+"""Формулировка отчёта на естественном языке. По центральному принципу языковая
+модель отвечает только за язык: она облекает УЖЕ посчитанный детерминированный
+вердикт в читаемый отчёт и
 ничего не считает и не выдумывает. Гард сохраняется: в промпте модели запрещено
 добавлять факты сверх приведённых. При недоступности модели работает мягкая
 деградация к детерминированной текстовой сводке из вердикта.
@@ -43,24 +43,37 @@ def deterministic_summary(verdict: dict) -> str:
 _HARD_TOKEN = re.compile(r"[0-9][\w.:\-]*|[A-Za-z][\w.\-]*\d[\w.\-]*|[A-Z][A-Za-z]{2,}")
 
 
-def _grounding_context(verdict: dict, facts: dict | None) -> str:
-    """Строит строку-контекст из всех заземлённых источников: вердикт, срез фактов и
-    дословные фрагменты реестра свидетельств. Сравнение идёт по нижнему регистру."""
+# Разбиение контекста на самостоятельные жёсткие токены той же природы, что и в
+# тексте отчёта. Заземление проверяется по РАВЕНСТВУ токенов, а не по вхождению
+# подстроки. Прежняя подстрочная проверка была дырявой: число «10» считалось
+# заземлённым любой строкой, содержащей эти цифры (например любым таймстампом или
+# длинным идентификатором), из-за чего модель могла безнаказанно вносить выдуманные
+# числа. Токенная проверка требует, чтобы ровно такой токен встретился в контексте.
+
+
+def _hard_tokens(text: str) -> set:
+    return {t.lower() for t in _HARD_TOKEN.findall(text or "")}
+
+
+def _grounding_tokens(verdict: dict, facts: dict | None) -> set:
+    """Строит множество заземлённых жёстких токенов из всех источников: вердикт, срез
+    фактов и дословные фрагменты реестра свидетельств."""
     parts = [json.dumps(verdict, ensure_ascii=False)]
     if facts is not None:
         parts.append(json.dumps(facts, ensure_ascii=False, default=str))
     for e in verdict.get("evidence", []) or []:
         parts.append(str(e.get("snippet", "")))
-    return " ".join(parts).lower()
+    return _hard_tokens(" ".join(parts))
 
 
 def is_grounded(text: str, verdict: dict, facts: dict | None = None) -> bool:
     """Гард «нет цитаты, нет утверждения» для естественного языка: каждый жёсткий токен
     отчёта (число, адрес, версия, латинское тех-имя) обязан присутствовать в контексте
-    заземления. Иначе отчёт признаётся выдуманным и отбраковывается."""
-    context = _grounding_context(verdict, facts)
-    for tok in _HARD_TOKEN.findall(text or ""):
-        if tok.lower() not in context:
+    заземления КАК ОТДЕЛЬНЫЙ ТОКЕН, а не как подстрока. Иначе отчёт признаётся
+    выдуманным и отбраковывается."""
+    grounded = _grounding_tokens(verdict, facts)
+    for tok in _hard_tokens(text):
+        if tok not in grounded:
             return False
     return True
 
@@ -71,7 +84,7 @@ def build_prompt(verdict: dict, facts: dict | None = None) -> str:
     if facts is not None:
         # Передаём компактный срез фактов, без сырых списков латентностей.
         context["facts"] = {k: facts[k] for k in (
-            "total_lines", "level_counts", "error_rate", "error_signals",
+            "total_lines", "level_counts", "error_rate", "symptom_counts",
             "status_classes", "blast_radius", "time_span") if k in facts}
     return _INSTRUCTION + "\n\nДАННЫЕ (JSON):\n" + json.dumps(context, ensure_ascii=False)
 

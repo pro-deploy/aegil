@@ -1,5 +1,6 @@
-"""Модульный тест сборки вердикта RCA и гардов (ADR-0032, Часть B).
-Запуск без зависимостей: python3 services/rca/test_verdict.py
+"""Тесты сборки вердикта первопричины и гардов. Собираемый вид pytest.
+
+Запуск: cd services/rca && python3 -m pytest -q test_verdict.py
 """
 from aggregator import aggregate
 from detectors import detect
@@ -7,81 +8,101 @@ from scoring import score
 from verdict import build, guard
 from test_aggregator import RECORDS
 
-HEALTHY = [
-    {"ts": "2026-07-01T09:00:01Z", "level": "info", "service": "api", "msg": "http request",
-     "event": "http.request", "http.status": 200, "trace_id": "h1"},
-    {"ts": "2026-07-01T09:00:02Z", "level": "info", "service": "worker", "msg": "job done",
-     "event": "job.done", "trace_id": "h1"},
-]
+
+def _run(recs, baseline=None):
+    f = aggregate(recs)
+    bf = aggregate(baseline) if baseline else None
+    d = detect(f, bf)
+    s = score(d)
+    return build(f, d, s, recs)
 
 
-def _eq(name, got, want):
-    assert got == want, f"{name}: got {got!r}, want {want!r}"
+def test_guard_requires_evidence():
+    assert guard("причина", []) is None
+    assert guard("причина", [{"x": 1}]) == "причина"
 
 
-def main() -> None:
-    # Гард: без свидетельств утверждение отбрасывается.
-    _eq("guard drops", guard("причина", []), None)
-    _eq("guard keeps", guard("причина", [{"x": 1}]), "причина")
-
-    facts = aggregate(RECORDS)
-    dets = detect(facts)
-    s = score(dets)
-    v = build(facts, dets, s, RECORDS)
-
-    # Пятиполевая схема присутствует.
+def test_five_field_schema():
+    v = _run(RECORDS)
     for field in ("status", "confidence", "root_cause", "evidence", "action"):
-        assert field in v, f"нет поля {field}"
+        assert field in v
 
-    # Маленькое окно с двумя ошибками честно даёт degraded/uncertain, а не incident.
-    _eq("status", v["status"], "degraded")
-    _eq("band", v["confidence"]["band"], "uncertain")
-    # Корень это первичный физический отказ у цели llm (не вторичная отмена).
-    _eq("root_cause", v["root_cause"], "Первичный отказ «connection_refused» у цели llm")
-    assert v["action"], "действие должно быть заполнено при наличии свидетельств"
-    # Реестр свидетельств: две подтверждающие ошибки (connection_refused и 5xx).
-    _eq("evidence count", len(v["evidence"]), 2)
+
+def test_records_root_is_primary_call_failure():
+    v = _run(RECORDS)
+    assert v["status"] == "degraded"
+    assert v["confidence"]["band"] == "uncertain"
+    # Корень это первичный физический отказ у вызываемой цели, а не вторичная отмена.
+    assert v["root_cause"] == "Первичный отказ «connection_refused» у цели billing"
+    assert v["action"]
     for e in v["evidence"]:
-        _eq("kind", e["kind"], "log")
-        _eq("grounded", e["grounded"], True)
-        assert e["source"].startswith("log:"), e["source"]
-        assert e["snippet"], "сниппет не должен быть пустым (дословная цитата)"
-
-    # Здоровое окно: статус healthy, первопричина и действие отброшены гардом.
-    hf = aggregate(HEALTHY)
-    hv = build(hf, detect(hf), score(detect(hf)), HEALTHY)
-    _eq("healthy status", hv["status"], "healthy")
-    _eq("healthy root_cause", hv["root_cause"], None)
-    _eq("healthy action", hv["action"], None)
-    _eq("healthy evidence", hv["evidence"], [])
-
-    # Прикладные ошибки без сетевого сигнала: причина заземлена в окне (сервис и
-    # доминирующий шаблон), а не выдуманный каскад вверх по графу.
-    app = [{"level": "info", "service": "embed", "msg": "ok", "trace_id": f"a{i}"} for i in range(30)]
-    app += [{"level": "error", "service": "embed", "msg": "pgvector dim mismatch",
-             "trace_id": f"ae{i}", "error_signal": "unknown", "tenant_id": f"T{i}", "job_id": f"J{i}"}
-            for i in range(20)]
-    af = aggregate(app)
-    av = build(af, detect(af), score(detect(af)), app)
-    assert "Прикладные ошибки сервиса embed" in av["root_cause"], av["root_cause"]
-    assert "каскад" not in av["root_cause"].lower(), "не должно быть выдуманного каскада"
-
-    # Первичный отказ самого сервиса (oom) атрибутируется сервису, а не цели unknown.
-    oom = [{"level": "error", "service": "llm", "msg": "cuda oom", "trace_id": f"o{i}",
-            "error_signal": "oom", "tenant_id": f"T{i}", "job_id": f"J{i}"} for i in range(10)]
-    of = aggregate(oom)
-    ov = build(of, detect(of), score(detect(of)), oom)
-    _eq("oom locus", ov["root_cause"], "Первичный отказ «oom» у сервиса llm")
-
-    # Законный каскад: только вторичные отмены, первичного в окне нет.
-    sec = [{"level": "error", "service": "worker", "msg": "deadline", "trace_id": f"s{i}",
-            "error_signal": "deadline_exceeded", "tenant_id": f"T{i}", "job_id": f"J{i}"} for i in range(10)]
-    sf = aggregate(sec)
-    sv = build(sf, detect(sf), score(detect(sf)), sec)
-    assert "Каскад отмен" in sv["root_cause"], sv["root_cause"]
-
-    print("verdict: all asserts passed")
+        assert e["kind"] == "log"
+        assert e["grounded"] is True
+        assert e["source"].startswith("log:")
+        assert e["snippet"]
 
 
-if __name__ == "__main__":
-    main()
+def test_healthy_window_drops_claims():
+    healthy = [{"level": "info", "service": "api", "msg": "ok", "_ts_ns": i} for i in range(5)]
+    hv = _run(healthy)
+    assert hv["status"] == "healthy"
+    assert hv["root_cause"] is None
+    assert hv["action"] is None
+    assert hv["evidence"] == []
+
+
+def test_not_healthy_on_real_spike():
+    # Негативная проверка парадокса «здоровье при реальном всплеске»: явная волна
+    # ошибок с сетевым симптомом не может быть объявлена здоровой из-за недобора полосы.
+    wave = [{"level": "info", "service": "api", "msg": "ok", "_ts_ns": i} for i in range(6)]
+    wave += [{"level": "error", "service": "api", "msg": "connection refused",
+              "pod": f"api-{i}", "namespace": "prod", "_ts_ns": 100 + i} for i in range(4)]
+    v = _run(wave)
+    assert v["status"] in ("degraded", "incident")
+    assert v["status"] != "healthy"
+    assert v["root_cause"]
+
+
+def test_root_chosen_by_dominance_not_order():
+    # Негативная проверка выбора «первый встреченный»: единичный редкий сигнал в начале
+    # окна не должен перебивать массовую доминирующую причину.
+    recs = [{"level": "error", "service": "db", "msg": "out of memory", "pod": "db-0",
+             "namespace": "prod", "_ts_ns": -1}]
+    recs += [{"level": "error", "service": "api", "msg": "connection refused", "pod": f"a{i}",
+              "namespace": "prod", "_ts_ns": i} for i in range(8)]
+    v = _run(recs)
+    assert "connection_refused" in v["root_cause"]
+    assert "oom" not in v["root_cause"]
+
+
+def test_self_locus_oom_attributed_to_service():
+    oom = [{"level": "error", "service": "llm", "msg": "fatal: out of memory (oom killed)",
+            "pod": f"llm-{i}", "namespace": "prod", "_ts_ns": i} for i in range(10)]
+    assert _run(oom)["root_cause"] == "Первичный отказ «oom» у сервиса llm"
+
+
+def test_secondary_only_is_legitimate_cascade():
+    sec = [{"level": "error", "service": "worker", "msg": "context deadline exceeded",
+            "pod": f"w{i}", "namespace": "prod", "_ts_ns": i} for i in range(10)]
+    assert "Каскад отмен" in _run(sec)["root_cause"]
+
+
+def test_application_errors_without_network_signal():
+    app = [{"level": "info", "service": "embed", "msg": "ok", "_ts_ns": i} for i in range(30)]
+    app += [{"level": "error", "service": "embed", "msg": "vector dimension mismatch",
+             "pod": f"e{i}", "namespace": "prod", "_ts_ns": 100 + i} for i in range(20)]
+    v = _run(app)
+    assert "Прикладные ошибки сервиса embed" in v["root_cause"]
+    assert "каскад" not in v["root_cause"].lower()
+
+
+def test_symptoms_read_from_plain_text_logs():
+    # Негативная проверка слепоты: вердикт по ПРОСТЫМ текстовым логам подов (без
+    # структурного поля error_signal) всё равно опознаёт сетевую первопричину.
+    text = [{"msg": f"i={i}", "level": "info", "_ts_ns": i} for i in range(6)]
+    text += [{"msg": "dial tcp 10.0.0.5:5432: connect: connection refused",
+              "level": "error", "service": "api", "pod": f"api-{i}", "namespace": "prod",
+              "_ts_ns": 100 + i} for i in range(5)]
+    v = _run(text)
+    assert v["status"] != "healthy"
+    assert "connection_refused" in v["root_cause"]

@@ -1,66 +1,78 @@
-"""Модульный тест формулировки отчёта (ADR-0032, Часть B).
-Запуск без зависимостей: python3 services/rca/test_report.py
+"""Тесты формулировки отчёта и гарда заземления. Собираемый вид pytest.
+
+Запуск: cd services/rca && python3 -m pytest -q test_report.py
 """
 from pipeline import analyze
-from report import build_prompt, deterministic_summary, formulate
+from report import build_prompt, deterministic_summary, formulate, is_grounded
 from test_aggregator import RECORDS
 
 
-def _eq(name, got, want):
-    assert got == want, f"{name}: got {got!r}, want {want!r}"
-
-
-def main() -> None:
+def test_deterministic_without_model():
     out = analyze(RECORDS)
-    verdict, facts = out["verdict"], out["facts"]
+    r0 = formulate(out["verdict"])
+    assert r0["source"] == "deterministic"
+    assert "Первопричина" in r0["report"]
 
-    # Без модели, детерминированная сводка.
-    r0 = formulate(verdict)
-    _eq("no-model source", r0["source"], "deterministic")
-    assert "Первопричина" in r0["report"], r0["report"]
 
-    # Здоровое окно.
+def test_healthy_summary():
     healthy = {"status": "healthy", "confidence": {"value": 0.09, "band": "low"}, "evidence": []}
-    _eq("healthy summary", deterministic_summary(healthy),
-        "Инцидент не обнаружен: значимого сигнала в окне нет.")
+    assert deterministic_summary(healthy) == "Инцидент не обнаружен: значимого сигнала в окне нет."
 
-    # С моделью, отчёт берётся от неё.
-    r1 = formulate(verdict, facts, llm_complete=lambda p: "Сжатый отчёт по инциденту.")
-    _eq("model source", r1["source"], "model")
-    _eq("model report", r1["report"], "Сжатый отчёт по инциденту.")
 
-    # Гард заземления: модель, добавившая факты сверх приведённых (несуществующий хост,
-    # база, число записей), отбраковывается и заменяется детерминированной сводкой.
+def test_model_report_accepted():
+    out = analyze(RECORDS)
+    r1 = formulate(out["verdict"], out["facts"], llm_complete=lambda p: "Сжатый отчёт по инциденту.")
+    assert r1["source"] == "model"
+    assert r1["report"] == "Сжатый отчёт по инциденту."
+
+
+def test_ungrounded_model_rejected():
+    out = analyze(RECORDS)
+
     def _liar(p):
         return "Инцидент вызван отказом Postgres на узле 10.0.0.9, потеряно 5000 записей."
-    r_lie = formulate(verdict, facts, llm_complete=_liar)
-    _eq("ungrounded rejected", r_lie["source"], "deterministic")
-    _eq("ungrounded reason", r_lie["reason"], "model_output_ungrounded")
 
-    # Заземлённый отчёт с фактами из вердикта (сигнал, цель) принимается.
+    r = formulate(out["verdict"], out["facts"], llm_complete=_liar)
+    assert r["source"] == "deterministic"
+    assert r["reason"] == "model_output_ungrounded"
+
+
+def test_grounded_model_accepted():
+    out = analyze(RECORDS)
+
     def _honest(p):
-        return "Первичный отказ connection_refused у цели llm; проверить доступность llm."
-    r_ok = formulate(verdict, facts, llm_complete=_honest)
-    _eq("grounded accepted", r_ok["source"], "model")
+        return "Первичный отказ connection_refused у цели billing; проверить доступность billing."
 
-    # Сбой модели, мягкая деградация к детерминированной сводке.
+    r = formulate(out["verdict"], out["facts"], llm_complete=_honest)
+    assert r["source"] == "model"
+
+
+def test_grounding_token_not_substring():
+    # Негативная проверка дырявой подстрочной проверки: число «10» НЕ считается
+    # заземлённым лишь потому, что цифры «10» встречаются внутри таймстампа или
+    # длинного идентификатора. Требуется совпадение отдельного токена.
+    verdict = {"evidence": [{"snippet": "2026-07-01T12:00:10Z error at line 5"}]}
+    assert is_grounded("Потеряно 10 записей", verdict, None) is False
+    # А настоящий отдельный токен «5» из контекста заземляется.
+    assert is_grounded("на строке 5", verdict, None) is True
+
+
+def test_model_failure_degrades():
+    out = analyze(RECORDS)
+
     def _boom(p):
         raise RuntimeError("llm down")
 
-    r2 = formulate(verdict, facts, llm_complete=_boom)
-    _eq("degrade source", r2["source"], "deterministic")
-
-    # Пустой ответ модели тоже деградирует.
-    r3 = formulate(verdict, facts, llm_complete=lambda p: "   ")
-    _eq("empty degrades", r3["source"], "deterministic")
-
-    # Промпт содержит первопричину и запрет выдумывать (гард).
-    prompt = build_prompt(verdict, facts)
-    assert "connection_refused" in prompt, "промпт должен нести посчитанные факты"
-    assert "не выдумыв" in prompt, "промпт должен запрещать выдумывание"
-
-    print("report: all asserts passed")
+    assert formulate(out["verdict"], out["facts"], llm_complete=_boom)["source"] == "deterministic"
 
 
-if __name__ == "__main__":
-    main()
+def test_empty_model_output_degrades():
+    out = analyze(RECORDS)
+    assert formulate(out["verdict"], out["facts"], llm_complete=lambda p: "   ")["source"] == "deterministic"
+
+
+def test_prompt_carries_facts_and_ban():
+    out = analyze(RECORDS)
+    prompt = build_prompt(out["verdict"], out["facts"])
+    assert "connection_refused" in prompt
+    assert "не выдумыв" in prompt

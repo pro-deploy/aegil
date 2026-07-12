@@ -1,40 +1,33 @@
-"""Модульный тест маршрутизации запроса (ADR-0032, Часть B).
-Запуск без зависимостей: python3 services/rca/test_router.py
+"""Тесты маршрутизации запроса инженера. Собираемый вид pytest.
+
+Запуск: cd services/rca && python3 -m pytest -q test_router.py
 """
 from router import BRANCHES, route
 
 
-def _eq(name, got, want):
-    assert got == want, f"{name}: got {got!r}, want {want!r}"
+def test_keyword_routing():
+    assert route("почему connection refused после деплоя?") == ["network", "releases"]
+    assert route("что случилось?") == ["logs"]
+    assert route("виден всплеск ошибок") == ["logs", "anomalies"]
+    assert route("покажи каскад по зависимостям сервисов") == ["dependencies"]
+    assert route("release network") == ["network", "releases"]
 
 
-def main() -> None:
-    _eq("network+releases", route("почему connection refused после деплоя?"),
-        ["network", "releases"])
-    _eq("logs default", route("что случилось?"), ["logs"])
-    _eq("anomalies", route("виден всплеск ошибок"), ["logs", "anomalies"])
-    _eq("dependencies", route("покажи каскад по зависимостям сервисов"),
-        ["dependencies"])
-    _eq("ordered by canon", route("release network"), ["network", "releases"])
-
-    # Подключаемый обученный классификатор (эмуляция SetFit) перекрывает фолбэк.
+def test_pluggable_classifier_overrides_fallback():
     class FakeSetFit:
         def predict(self, q):
             return ["alerts", "anomalies"]
 
-    _eq("pluggable classifier", route("любой запрос", classifier=FakeSetFit()),
-        ["alerts", "anomalies"])
+    assert route("любой запрос", classifier=FakeSetFit()) == ["alerts", "anomalies"]
 
-    # Пустой ответ классификатора деградирует к ветке логов.
+
+def test_empty_classifier_degrades_to_logs():
     class Empty:
         def predict(self, q):
             return []
 
-    _eq("empty degrades to logs", route("x", classifier=Empty()), ["logs"])
-    _eq("branches canon", BRANCHES,
-        ("logs", "alerts", "network", "anomalies", "dependencies", "releases"))
-    print("router: all asserts passed")
+    assert route("x", classifier=Empty()) == ["logs"]
 
 
-if __name__ == "__main__":
-    main()
+def test_branches_canon():
+    assert BRANCHES == ("logs", "alerts", "network", "anomalies", "dependencies", "releases")
