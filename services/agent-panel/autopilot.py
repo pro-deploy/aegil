@@ -31,6 +31,7 @@ import app_adapter
 import config
 import guards
 import incidents
+import remediate
 import k8s
 import outcomes
 import rca_client
@@ -171,6 +172,24 @@ def _repair(gid: str, alert: dict, fp: str, now: float) -> dict:
     возвращает None, но и сам переход состояний инцидента обёрнут так, чтобы группа не залипла в
     состоянии ремонта. Возвращает запись решения для тестов."""
     incidents.set_lifecycle(gid, "auto_fixing", by=ACTOR, action="investigate")
+
+    # Детерминированный ремонт БЕЗ языковой модели: по хорошо понятному симптому выбирается
+    # конкретное безопасное действие (перезапуск безсостоятельного сервиса) и исполняется через
+    # гейт, гарды и аудит. Действуем только если действие исполнилось бы автономно (сервис в
+    # allowlist): иначе не плодим отложенное подтверждение, а уступаем расследованию моделью.
+    # Так автономный ремонт работает и с моделью без вызова инструментов (например gemma).
+    det = remediate.propose(alert)
+    if det and agent_exec.would_autoact(det["argv"]):
+        res = agent_exec.act(det["argv"], det.get("target", "cluster"), "", det.get("why", ""), ACTOR)
+        if res.get("outcome") == "executed":
+            incidents.add_note(gid, ACTOR, f"Ремонт [{alert.get('code')}]: детерминированно выполнено "
+                               f"«{' '.join(det['argv'])}». Проверка через {VERIFY_DELAY} с.")
+            audit_write(ACTOR, f"agent:repair:{alert.get('code')}", det.get("params", {}),
+                        gid, confirmed=True, result="remediated")
+            _pending_verify.append({"fp": fp, "code": alert["code"], "gid": gid,
+                                    "alert": alert, "due": now + VERIFY_DELAY})
+            return {"gid": gid, "code": alert["code"], "decision": "repair", "mode": "deterministic"}
+
     guards.record_attempt(fp, "investigate", None, now)
     trace = _run_investigation(gid, alert)
     if trace is None:

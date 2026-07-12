@@ -336,7 +336,20 @@ $('#logout').onclick=logout;
 function boot(){$('#gate').style.display='none';$('#app').style.display='flex';
   refreshAll();setInterval(refreshAll,5000);renderQchips();syncSegs();}
 
-async function refreshAll(){try{await Promise.all([loadCore(),loadIncidents(),loadCluster(),loadModel()]);}catch(e){}}
+async function refreshAll(){try{await Promise.all([loadCore(),loadIncidents(),loadCluster(),loadModel()]);renderHero();}catch(e){}}
+let lastInc={total:0,high:0};
+function renderHero(){
+  const pods=lastOverview.pods||[];const bad=pods.filter(p=>podSt(p)[0]!=='ok').length;
+  const sl=lastSlo||{};
+  let sev='ok',label='Здоров';
+  if((sl.enabled&&sl.severity==='critical')||lastInc.high>0){sev='crit';label='Критично';}
+  else if(bad>0||lastInc.total>0||(sl.enabled&&sl.severity==='at_risk')){sev='warn';label='Под угрозой';}
+  $('#hero').className='hero '+sev;
+  $('#herostatus').textContent=bad>0?('Проблемных подов: '+bad):(lastInc.total>0?('Активных инцидентов: '+lastInc.total):label);
+  $('#herosli').textContent=sl.enabled?(Math.round(sl.sli*1000)/10+'%'):'—';
+  $('#heroburn').textContent=sl.enabled?(sl.burn_rate+'×'):'выкл';
+  $('#herobar').style.width=sl.enabled?Math.min(100,Math.round((sl.burn_rate/20)*100))+'%':'0%';
+}
 
 /* геройская карточка + плитки: здоровье, SLO, обзор, модель */
 let lastOverview={pods:[],deployments:[]}, lastSlo={}, lastLlm={}, lastState={};
@@ -344,16 +357,6 @@ async function loadCore(){
   const [ov,sl,st]=await Promise.all([api('/overview'),api('/slo'),api('/agent/state')]);
   lastOverview=ov; lastSlo=sl; lastState=st;
   const pods=ov.pods||[]; const bad=pods.filter(p=>podSt(p)[0]!=='ok').length;
-  // геройский статус
-  let sev='ok', label='Здоров';
-  if(sl.enabled&&sl.severity==='critical'){sev='crit';label='Критично';}
-  else if(bad>0||(sl.enabled&&sl.severity==='at_risk')){sev='warn';label='Под угрозой';}
-  const hero=$('#hero');hero.className='hero '+sev;
-  $('#herostatus').textContent=bad>0?('Проблемных подов: '+bad):label;
-  $('#herosli').textContent=sl.enabled?(Math.round(sl.sli*1000)/10+'%'):'—';
-  $('#heroburn').textContent=sl.enabled?(sl.burn_rate+'×'):'выкл';
-  $('#herobar').style.width=sl.enabled?Math.min(100,Math.round((sl.burn_rate/20)*100))+'%':'0%';
-  // плитки
   tiles([
     ['Поды', (pods.length-bad)+'/'+pods.length, bad?'warn':'good'],
     ['Автономия', st.mode||st.autonomy||'—', ''],
@@ -373,6 +376,7 @@ const BAND=b=>({high:'high',uncertain:'uncertain',low:'low',healthy:'healthy'}[b
 function when(ts){if(!ts)return'';const s=(Date.now()-new Date(ts))/1000;
   if(s<60)return Math.round(s)+' с';if(s<3600)return Math.round(s/60)+' мин';return Math.round(s/3600)+' ч';}
 async function loadIncidents(){const d=await api('/incidents');const box=$('#inclist');const gs=d.groups||[];
+  lastInc={total:gs.length,high:gs.filter(g=>BAND(g.band)==='high').length};
   $('#inccount').textContent=gs.length?(gs.length+' активн.'):'';
   box.textContent='';
   if(!gs.length){const e=document.createElement('div');e.className='card empty';

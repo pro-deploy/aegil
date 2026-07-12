@@ -419,6 +419,43 @@ def _decision(argv, level: str) -> str:
     return base
 
 
+def would_autoact(argv) -> bool:
+    """Истинно, если действие исполнилось бы автономно при текущем уровне автономии (гейт даёт
+    AUTO), и это можно узнать БЕЗ побочных эффектов. Нужен детерминированному ремонту, чтобы не
+    плодить отложенные подтверждения там, где автономного исполнения всё равно не будет."""
+    if not _valid_argv(argv):
+        return False
+    if policy.classify(argv) == policy.READ:
+        return False
+    return _decision(argv, effective_autonomy()) == policy.AUTO
+
+
+def act(argv, target: str = "cluster", node: str = "", why: str = "",
+        operator: str = audit.ACTOR_AGENT) -> dict:
+    """Публичное детерминированное исполнение ОДНОГО действия через гейт опасности, гарды и аудит,
+    без языковой модели. Используется автономным ремонтом (autopilot) и одиночными командами
+    оператора. Возвращает {outcome, ...}: read (чтение исполнено), executed (мутация исполнена
+    автономно), blocked (гард запретил), failed (исполнение не удалось), pending_confirm (вынесено
+    на подтверждение оператора), proposed (уровень наблюдения, только предложено), error."""
+    if not _valid_argv(argv):
+        return {"outcome": "error", "result": {"error": "argv должен быть непустым списком строк"}}
+    if target == "node" and not node:
+        return {"outcome": "error", "result": {"error": "для target=node нужно имя узла"}}
+    cls = policy.classify(argv)
+    if cls == policy.READ:
+        return {"outcome": "read", "result": _read(argv, target, node, operator)}
+    decision = _decision(argv, effective_autonomy())
+    if decision == policy.PROPOSE:
+        return {"outcome": "proposed"}
+    if decision == policy.CONFIRM:
+        token, msg = _stage_pending(argv, target, node, why, cls, operator)
+        return {"outcome": "pending_confirm", "token": token, "message": msg}
+    res = _execute_mutation(argv, target, node, operator, confirmed=False)
+    if isinstance(res, dict) and res.get("blocked"):
+        return {"outcome": "blocked", "result": res}
+    return {"outcome": "executed" if _result_ok(res) else "failed", "result": res}
+
+
 # ---------------------------------------------------------------------------
 # Обработка одного вызова инструмента.
 # ---------------------------------------------------------------------------
