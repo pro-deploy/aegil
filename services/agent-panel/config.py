@@ -1,47 +1,89 @@
-"""Конфигурация продукта: всё, что раньше было зашито под конкретное приложение (имена сервисов,
-роли узлов, списки допустимых и запрещённых к перезапуску сервисов, пороги алертов, эндпоинты),
-вынесено сюда и управляется переменными окружения. Так один и тот же образ агент-панели
-подключается к любому кластеру и к любому приложению без правки кода. Значения по умолчанию
-нейтральны и не привязаны ни к какому приложению.
+"""Конфигурация продукта kube-sentinel.
 
-Переменные окружения:
-  RCA_URL                адрес сервиса разбора логов (по умолчанию http://rca:9107)
-  LLM_SERVICE_URL        адрес языковой модели (см. llm.py)
-  NAMESPACE              пространство имён Kubernetes для наблюдения и действий (default: default)
-  RESTART_ALLOWLIST      безсостоятельные сервисы, которые агент может перезапускать (через запятую)
-  RESTART_DENYLIST       сервисы, перезапуск которых запрещён (хранилища, особые поды)
-  NODE_ROLE_LABEL        метка роли узла для дружеских имён (default: node-role.kubernetes.io/role)
-  ALERT_DISK_WARN        порог заполнения диска, предупреждение (default: 80)
-  ALERT_DISK_CRIT        порог заполнения диска, критично (default: 90)
-  AGENT_AUTONOMOUS       1 включает автономный ремонт, иначе только наблюдение и эскалации
+Вся настройка, которая отличает одно развёртывание от другого (пространство имён, адреса внешних
+систем, списки допустимых к перезапуску сервисов, защищаемые ресурсы, уровень автономии, доступ к
+языковой модели), вынесена сюда и управляется переменными окружения с единым префиксом
+``SENTINEL_``. Один и тот же образ панели подключается к любому кластеру и к любому приложению без
+правки кода. Значения по умолчанию нейтральны и не привязаны ни к какому приложению; соглашения
+описаны в ``docs/CONVENTIONS.md``.
 """
 from __future__ import annotations
 
 import os
 
+# Уровни автономии. observe: сухой прогон, только наблюдение и предложения. safe_repair: автономно
+# исполняется read и safe_write, destructive и защищённые шаблоны за подтверждением. full: автономно
+# всё, кроме destructive и защищённых шаблонов, которые требуют подтверждения всегда.
+AUTONOMY_OBSERVE = "observe"
+AUTONOMY_SAFE_REPAIR = "safe_repair"
+AUTONOMY_FULL = "full"
+_AUTONOMY_LEVELS = (AUTONOMY_OBSERVE, AUTONOMY_SAFE_REPAIR, AUTONOMY_FULL)
 
-def _csv(name: str, default: str) -> set:
-    raw = os.getenv(name, default)
-    return {x.strip() for x in raw.split(",") if x.strip()}
+
+def _env(name: str, default: str = "") -> str:
+    """Значение переменной окружения продукта с обрезкой пробелов."""
+    return os.getenv(name, default).strip()
 
 
-# Пространство имён и адреса внешних систем.
-NAMESPACE = os.getenv("NAMESPACE", "default")
-RCA_URL = os.getenv("RCA_URL", "http://rca:9107").rstrip("/")
+def _csv(name: str, default: str = "") -> set[str]:
+    """Множество непустых значений из переменной окружения, перечисленных через запятую."""
+    return {x.strip() for x in os.getenv(name, default).split(",") if x.strip()}
 
-# Управление перезапусками. Пусто по умолчанию: без явного списка агент никого не перезапускает
-# автономно, что безопасно для незнакомого кластера. Адоптер перечисляет свои безсостоятельные
-# сервисы в RESTART_ALLOWLIST и хранилища в RESTART_DENYLIST.
-RESTART_ALLOWLIST = _csv("RESTART_ALLOWLIST", "")
-RESTART_DENYLIST = _csv("RESTART_DENYLIST", "postgres,redis,minio,etcd,vault")
 
-# Метка роли узла для дружеских имён («control», «gpu» и т. п.) в командах оператора.
-NODE_ROLE_LABEL = os.getenv("NODE_ROLE_LABEL", "node-role.kubernetes.io/role")
+def _int(name: str, default: int) -> int:
+    """Целочисленная переменная окружения с устойчивостью к пустому и мусорному значению."""
+    raw = _env(name)
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
-# Пороги алертов (проценты заполнения диска и прочее выносится по мере обобщения детекторов).
-ALERT_DISK_WARN = int(os.getenv("ALERT_DISK_WARN", "80"))
-ALERT_DISK_CRIT = int(os.getenv("ALERT_DISK_CRIT", "90"))
 
-# Автономный ремонт. По умолчанию выключен: сухой прогон (наблюдение и эскалации), чтобы на новом
-# кластере агент сперва показал, что БЫ он сделал, и лишь затем ему разрешают действовать.
-AGENT_AUTONOMOUS = os.getenv("AGENT_AUTONOMOUS", "").strip() in ("1", "true", "yes")
+# --- Пространство имён и внешние системы ---------------------------------------------------------
+
+# Наблюдаемое и управляемое пространство имён. По умолчанию берётся из downward API (переменную
+# SENTINEL_NAMESPACE в манифесте заполняет fieldRef metadata.namespace), иначе default.
+NAMESPACE = _env("SENTINEL_NAMESPACE") or "default"
+
+# Сервис детерминированного разбора логов.
+RCA_URL = (_env("SENTINEL_RCA_URL") or "http://rca:9107").rstrip("/")
+
+# --- Языковая модель -----------------------------------------------------------------------------
+
+# Провайдер протокола вызова инструментов: anthropic (по умолчанию) или openai-совместимый. Модель,
+# ключ и, при своей модели в кластере, базовый адрес задаются владельцем. Пустой ключ означает, что
+# агентный цикл недоступен и панель работает как исполнитель одиночных команд оператора.
+LLM_PROVIDER = (_env("SENTINEL_LLM_PROVIDER") or "anthropic").lower()
+LLM_MODEL = _env("SENTINEL_LLM_MODEL")
+LLM_API_KEY = _env("SENTINEL_LLM_API_KEY")
+LLM_BASE_URL = _env("SENTINEL_LLM_BASE_URL").rstrip("/")
+LLM_TIMEOUT = _int("SENTINEL_LLM_TIMEOUT", 120)
+
+# --- Узловой агент -------------------------------------------------------------------------------
+
+NODEAGENT_TOKEN = _env("SENTINEL_NODEAGENT_TOKEN")
+NODEAGENT_TIMEOUT = _int("SENTINEL_NODEAGENT_TIMEOUT", 30)
+
+# --- Политика и автономия ------------------------------------------------------------------------
+
+# Безсостоятельные сервисы, которые агент может перезапускать автономно. Пусто по умолчанию: на
+# незнакомом кластере агент никого не перезапускает, пока владелец не перечислит свои сервисы.
+RESTART_ALLOWLIST = _csv("SENTINEL_RESTART_ALLOWLIST")
+# Сервисы, перезапуск которых запрещён всегда (хранилища и особые поды).
+RESTART_DENYLIST = _csv("SENTINEL_RESTART_DENYLIST", "postgres,redis,minio,etcd,vault")
+
+# Защищаемые ресурсы и пути: действия над ними всегда требуют подтверждения оператора независимо от
+# уровня автономии. Заменяет наследный доменный класс finance. Владелец вносит сюда свои
+# production-базы, тома и критичные пути; по умолчанию пусто.
+PROTECTED_PATTERNS = _csv("SENTINEL_PROTECTED_PATTERNS")
+
+# Метка роли узла для дружеских имён в командах оператора. Если метки нет, агент оперирует именами
+# узлов как есть; зашитых имён узлов в продукте нет.
+NODE_ROLE_LABEL = _env("SENTINEL_NODE_ROLE_LABEL") or "node-role.kubernetes.io/role"
+
+
+def autonomy() -> str:
+    """Текущий уровень автономии из окружения. Недопустимое значение трактуется как observe
+    (самый безопасный уровень, fail-safe)."""
+    level = _env("SENTINEL_AUTONOMY").lower()
+    return level if level in _AUTONOMY_LEVELS else AUTONOMY_OBSERVE

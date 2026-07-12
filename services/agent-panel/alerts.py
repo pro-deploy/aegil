@@ -1,14 +1,24 @@
-"""Каталог алертов автономного агента (ADR-0038, раздел 6, этапы 3, 4 и 5: A1..A12).
+"""Универсальный каталог симптомов Kubernetes для автономного SRE-агента kube-sentinel.
 
-Каждая проверка детерминирована и чиста: принимает уже собранные факты (списки узлов и
-подов, сводки kubelet, сводку конвейера, вердикты RCA, посчитанные факты окна логов) и
-возвращает список алертов. Пороги вынесены в константы с переопределением через ENV. Алерт
-несёт синтетический вердикт для центра инцидентов (отпечаток строится обычным механизмом
-incidents.fingerprint) и параметры для плейбука (какой сервис или под виноват).
+Каталог домен-агностичен: он не знает и не предполагает имён приложения владельца, а описывает
+нейтральные симптомы, характерные для любого кластера Kubernetes. Каждый детектор чист и
+детерминирован: он принимает уже собранные факты (списки подов, узлов, деплойментов, событий, сводки
+kubelet, срок сертификата TLS) и возвращает список алертов. Ввод-вывод (обращения к Kubernetes, RCA и
+прикладному адаптеру) собирает автопилот в ``autopilot.observe``, поэтому детекторы проверяются
+модульными тестами на подставных данных без выхода в сеть.
+
+Каждый алерт несёт синтетический вердикт для центра инцидентов. Отпечаток строится обычным механизмом
+``incidents.fingerprint`` по полям ``status``, ``detectors`` и ``root_cause``, поэтому одинаковые
+симптомы группируются, а конкретные имена подов и числовые значения выносятся в ``params`` и в
+отпечаток не входят.
 
 Форма алерта:
-  {"code": "A2", "severity": "critical|high|warning", "title": "...",
-   "verdict": {...}, "params": {...}}
+  {"code": "<нейтральный код симптома>", "severity": "critical|high|warning",
+   "title": "<нейтральное описание симптома>", "verdict": {...}, "params": {...}}
+
+Пороги выносятся в переменные окружения с единым префиксом ``SENTINEL_`` и имеют нейтральные значения
+по умолчанию, пригодные для произвольного кластера без предварительной калибровки под конкретное
+приложение.
 """
 from __future__ import annotations
 
@@ -17,321 +27,330 @@ from datetime import datetime, timedelta, timezone
 
 import k8s
 
-# Пороги (ENV-переопределение, значения по умолчанию из спецификации).
-STUCK_AGE_SECONDS = int(os.getenv("AGENT_STUCK_AGE_SECONDS", "600"))
-DISK_WARN_PCT = int(os.getenv("AGENT_DISK_WARN_PCT", "80"))
-DISK_CRIT_PCT = int(os.getenv("AGENT_DISK_CRIT_PCT", "90"))
-RESTARTS_PER_HOUR = int(os.getenv("AGENT_RESTARTS_PER_HOUR", "3"))
-# A6: деградация латентности распознавания, p95 latency_ms событий ml.call target=asr за
-# 10 минут. Два порога: предупреждение и критично. Стартовые значения из спецификации,
-# калибруются по факту через ENV.
-LATENCY_ASR_P95_WARN_MS = int(os.getenv("AGENT_LATENCY_ASR_P95_WARN_MS", "8000"))
-LATENCY_ASR_P95_CRIT_MS = int(os.getenv("AGENT_LATENCY_ASR_P95_CRIT_MS", "16000"))
-# A8: молчание сервиса, под Running, но в Loki ноль строк от него за окно, хотя обычно
-# пишет чаще. Список сервисов, которые обязаны регулярно писать (базовая линия).
-SILENCE_MINUTES = int(os.getenv("AGENT_SILENCE_MINUTES", "10"))
-SILENCE_SERVICES = {s.strip() for s in os.getenv(
-    "AGENT_SILENCE_SERVICES", "api,worker,asr,diarize").split(",") if s.strip()}
-# A9: живой режим у потолка, занятость выше порога процента.
-LIVE_OCCUPANCY_PCT = int(os.getenv("AGENT_LIVE_OCCUPANCY_PCT", "85"))
-# A10: сертификат TLS истекает. Порог предупреждения и высокой серьёзности в сутках.
-TLS_WARN_DAYS = int(os.getenv("AGENT_TLS_WARN_DAYS", "14"))
-TLS_HIGH_DAYS = int(os.getenv("AGENT_TLS_HIGH_DAYS", "7"))
-# A6 плейбук: пороги роста нагрузки, при которых деградация латентности связывается с
-# ростом параллелизма (тогда снижаем параллелизм), а не со сбоем самого asr.
-LOAD_PROCESSING_HINT = int(os.getenv("AGENT_LOAD_PROCESSING_HINT", "3"))
+# --- Пороги (переопределяются переменными окружения SENTINEL_, нейтральные значения по умолчанию) ---
 
-# Признаки сетевых отказов в текстах вердиктов RCA.
-_CONN_SIGNALS = ("connection_refused", "timeout", "dns_error")
-# Признаки, что отказ касается ML-контура (GPU-узла).
-_ML_HINTS = ("ml.call", "asr", "diarize", "9101", "9104")
+# Порог числа рестартов пода за окно наблюдения, за которым рестарты трактуются как шторм. Окно по
+# умолчанию один час.
+RESTART_STORM_THRESHOLD = int(os.getenv("SENTINEL_RESTART_STORM_THRESHOLD", "5"))
+RESTART_WINDOW_SECONDS = int(os.getenv("SENTINEL_RESTART_WINDOW_SECONDS", "3600"))
 
+# Порог длительности ожидания планирования пода (Pending или Unschedulable), за которым ожидание
+# трактуется как затянувшееся. По умолчанию пять минут.
+PENDING_AGE_SECONDS = int(os.getenv("SENTINEL_PENDING_AGE_SECONDS", "300"))
 
-def _verdict_text(verdict: dict) -> str:
-    """Склеенный текст вердикта RCA (первопричина плюс цитаты) для поиска сигналов."""
-    v = verdict or {}
-    parts = [str(v.get("root_cause") or ""), str(v.get("action") or "")]
-    for e in v.get("evidence") or []:
-        parts.append(str(e.get("snippet") or ""))
-        parts.append(str(e.get("source") or ""))
-    return " ".join(parts).lower()
+# Пороги заполнения файловой системы узла в процентах: предупреждение и критично. Соответствуют
+# смыслу наследных ALERT_DISK_WARN и ALERT_DISK_CRIT, но объявлены здесь под префиксом SENTINEL_ с
+# нейтральными значениями по умолчанию, потому что каталог симптомов является их владельцем.
+DISK_WARN_PCT = int(os.getenv("SENTINEL_DISK_WARN", "80"))
+DISK_CRIT_PCT = int(os.getenv("SENTINEL_DISK_CRIT", "90"))
+
+# Порог заполнения памяти узла в процентах (предупреждение). Давление памяти как условие узла
+# (MemoryPressure) обрабатывается отдельно и всегда критичнее процентного порога.
+MEM_WARN_PCT = int(os.getenv("SENTINEL_MEM_WARN", "90"))
+
+# Пороги остатка срока действия сертификата TLS в сутках: предупреждение и высокая серьёзность.
+TLS_WARN_DAYS = int(os.getenv("SENTINEL_TLS_WARN_DAYS", "14"))
+TLS_HIGH_DAYS = int(os.getenv("SENTINEL_TLS_HIGH_DAYS", "7"))
+
+# Причины ожидания контейнера, означающие невозможность стартовать образ.
+_IMAGE_PULL_REASONS = ("ImagePullBackOff", "ErrImagePull", "InvalidImageName")
+# Причины событий кластера, которые заслуживают внимания как предупреждения планирования и монтирования.
+_EVENT_REASONS = ("FailedScheduling", "FailedMount", "FailedAttachVolume", "BackOff", "Unhealthy",
+                  "FailedCreatePodSandBox")
 
 
-def _alert(code: str, severity: str, title: str, params: dict | None = None) -> dict:
-    """Собирает алерт с синтетическим вердиктом для группировки в центре инцидентов.
-    Параметры плейбука кладутся и внутрь вердикта (params), чтобы пережить сохранение в
-    журнале инцидентов: подсказка «Показать логи» берёт имя виновного пода именно оттуда.
-    В отпечаток params не входят (fingerprint смотрит только status, detectors, root_cause),
-    поэтому группировка одинаковых инцидентов не ломается конкретным именем пода."""
+def _alert(code: str, severity: str, title: str, params: dict | None = None,
+           band: str = "high") -> dict:
+    """Собирает алерт с синтетическим вердиктом для группировки в центре инцидентов. Параметры
+    симптома кладутся и внутрь вердикта (params), чтобы пережить сохранение в журнале инцидентов и
+    попасть к агентному расследованию. В отпечаток params не входят, поэтому группировка одинаковых
+    симптомов не ломается конкретным именем пода или числовым значением."""
     p = params or {}
-    return {"code": code, "severity": severity, "title": title,
-            "params": p,
-            "verdict": {"status": "incident", "band": "high",
-                        "detectors": [code], "root_cause": title, "params": p}}
+    return {"code": code, "severity": severity, "title": title, "params": p,
+            "verdict": {"status": "incident", "band": band, "detectors": [code],
+                        "root_cause": title, "params": p}}
+
+
+def _parse_ts(raw) -> datetime | None:
+    """Разбирает метку времени ISO 8601 (в том числе с суффиксом Z) в осведомлённое о зоне значение."""
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
-# Проверки A1..A5, A7.
+# Симптомы уровня подов.
 # ---------------------------------------------------------------------------
 
 
-def check_a1(nodes, stats_by_node, rca_verdict, gpu_node: str) -> list:
-    """A1: GPU-узел недоступен: узел не Ready, kubelet молчит либо RCA видит
-    connection_refused/timeout к ML. Стоит вся транскрибация."""
-    out = []
-    diag = None
-    if nodes is not None:
-        gn = next((n for n in nodes if n.get("name") == gpu_node), None)
-        if gn is not None and not gn.get("ready"):
-            diag = f"узел {gpu_node} не Ready в Kubernetes (узел целиком или туннель)"
-        elif gn is not None and (stats_by_node or {}).get(gpu_node) is None:
-            diag = f"kubelet узла {gpu_node} не отвечает (туннель или kubelet)"
-    if diag is None:
-        text = _verdict_text(rca_verdict)
-        if any(s in text for s in ("connection_refused", "timeout")) \
-                and any(h in text for h in _ML_HINTS):
-            diag = "вызовы ML дают connection_refused или timeout (сервисы GPU-узла)"
-    if diag:
-        out.append(_alert("A1", "critical",
-                          f"GPU-узел недоступен: {diag}",
-                          {"node": gpu_node, "diagnosis": diag}))
-    return out
-
-
-def check_a2(stuck_verdict, overview) -> list:
-    """A2: очередь не движется: RCA /stuck видит застрявшие ИЛИ возраст старейшего
-    ожидающего задания больше STUCK_AGE_SECONDS."""
-    out = []
-    sv = stuck_verdict or {}
-    if sv.get("status") in ("incident", "degraded"):
-        out.append(_alert("A2", "high", "Застрявшие задания в конвейере (RCA /stuck)",
-                          {"source": "stuck"}))
-        return out
-    q = ((overview or {}).get("queue") or {})
-    age = q.get("oldest_waiting_seconds") or 0
-    queued = (q.get("by_status") or {}).get("queued", 0)
-    if queued and age > STUCK_AGE_SECONDS:
-        out.append(_alert("A2", "high",
-                          "Очередь стоит: старейшее ожидающее задание старше порога",
-                          {"source": "overview", "age_seconds": age}))
-    return out
-
-
-def check_a3(nodes, stats_by_node) -> list:
-    """A3: любая файловая система узла заполнена выше DISK_WARN_PCT (предупреждение)
-    или DISK_CRIT_PCT (критично) по сводке kubelet. Для плейбука уровня B алерт несёт
-    признак критичности (crit) и метку тома: только для узла управления (control), где
-    живут поды воркера, эфемерная очистка временных файлов имеет смысл."""
-    import status as status_cards
-    out = []
-    for n in nodes or []:
-        u = status_cards.node_usage(n, (stats_by_node or {}).get(n.get("name")))
-        for fs in u.get("fs") or []:
-            p = fs.get("pct") or 0
-            if p >= DISK_WARN_PCT:
-                crit = p >= DISK_CRIT_PCT
-                sev = "critical" if crit else "warning"
-                out.append(_alert(
-                    "A3", sev,
-                    f"Диск узла {n.get('name')} ({fs.get('label')}) заполнен на {p}%",
-                    {"node": n.get("name"), "fs": fs.get("label"), "pct": p,
-                     "crit": crit}))
-    return out
-
-
-def check_a4(pods, now: datetime | None = None) -> list:
-    """A4: под падает: CrashLoopBackOff, OOMKilled или больше RESTARTS_PER_HOUR
-    рестартов за последний час. Один алерт на сервис (отпечаток без хэшей пода)."""
-    now = now or datetime.now(timezone.utc)
-    hour_ago = now - timedelta(hours=1)
-    out = []
-    seen = set()
-    pipeline = {"asr", "diarize", "worker", "api"}
+def check_crashloop(pods) -> list:
+    """Поды в состоянии CrashLoopBackOff: контейнер циклически падает и перезапускается. Один алерт
+    на сервис-владелец пода (отпечаток без хэшей пода), чтобы серия подов одного сервиса давала один
+    инцидент."""
+    out, seen = [], set()
     for p in pods or []:
-        reason = None
-        if p.get("waiting_reason") == "CrashLoopBackOff":
-            reason = "CrashLoopBackOff"
-        elif p.get("oom_killed"):
-            reason = "OOMKilled"
-        else:
-            ts = p.get("last_restart_at")
-            if p.get("restarts", 0) > RESTARTS_PER_HOUR and ts:
-                try:
-                    when = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                except ValueError:
-                    when = None
-                if when and when >= hour_ago:
-                    reason = f"больше {RESTARTS_PER_HOUR} рестартов за час"
-        if not reason:
+        if p.get("waiting_reason") != "CrashLoopBackOff":
             continue
         svc = k8s.pod_service(p.get("name", ""))
         if svc in seen:
             continue
         seen.add(svc)
-        sev = "high" if svc in pipeline else "warning"
-        out.append(_alert("A4", sev, f"Под сервиса {svc} падает: {reason}",
+        out.append(_alert("crashloop", "high",
+                          f"Под сервиса {svc} в CrashLoopBackOff (контейнер циклически падает)",
+                          {"service": svc, "pod": p.get("name", ""),
+                           "reason": "CrashLoopBackOff"}))
+    return out
+
+
+def check_image_pull(pods) -> list:
+    """Поды, у которых образ не скачивается (ImagePullBackOff, ErrImagePull, InvalidImageName): под не
+    может стартовать, пока образ или его тег недоступны. Один алерт на сервис."""
+    out, seen = [], set()
+    for p in pods or []:
+        reason = p.get("waiting_reason")
+        if reason not in _IMAGE_PULL_REASONS:
+            continue
+        svc = k8s.pod_service(p.get("name", ""))
+        if svc in seen:
+            continue
+        seen.add(svc)
+        out.append(_alert("image_pull", "high",
+                          f"Под сервиса {svc} не может скачать образ ({reason})",
                           {"service": svc, "pod": p.get("name", ""), "reason": reason}))
     return out
 
 
-def check_a5(rca_verdict) -> list:
-    """A5: всплеск 5xx на api: детектор D10 в вердикте RCA. Виновник плейбука: сервис
-    из allowlist, упомянутый в первопричине; иначе только эскалация."""
-    v = rca_verdict or {}
-    if "D10" not in (v.get("detectors") or []):
-        return []
-    text = _verdict_text(v)
-    culprit = next((s for s in sorted(k8s.ALLOWED) if s in text), None)
-    return [_alert("A5", "critical",
-                   "Всплеск ошибок 5xx на api (детектор D10)",
-                   {"culprit": culprit, "root_cause": v.get("root_cause")})]
-
-
-def check_a7(rca_verdict, pods) -> list:
-    """A7: недоступно хранилище состояния: connection_refused либо dns_error к postgres
-    или redis в вердикте RCA; фаза пода прикладывается как подтверждение."""
-    text = _verdict_text(rca_verdict)
-    if not any(s in text for s in ("connection_refused", "dns_error")):
-        return []
-    out = []
-    for store in ("postgres", "redis"):
-        if store not in text:
-            continue
-        pod = next((p for p in pods or [] if p.get("name", "").startswith(store)), None)
-        phase = pod.get("phase") if pod else "неизвестна (панель вне кластера)"
-        out.append(_alert("A7", "critical",
-                          f"Хранилище {store} недоступно (connection_refused/dns_error)",
-                          {"store": store, "pod_phase": phase,
-                           "pod": pod.get("name") if pod else None}))
-    return out
-
-
-def check_a6(rca_facts, overview) -> list:
-    """A6: деградация латентности распознавания. p95 latency_ms событий ml.call с target=asr
-    за окно выше порога (факты окна логов из RCA, блок latency_by_target). Плейбук решает по
-    соседним фактам: если нагрузка (число обрабатываемых заданий) высока, деградация связана
-    с ростом параллелизма (снизить параллелизм), иначе разовый перезапуск asr."""
-    lat = ((rca_facts or {}).get("latency_by_target") or {}).get("asr") or {}
-    p95 = lat.get("p95_ms")
-    if not isinstance(p95, (int, float)) or p95 < LATENCY_ASR_P95_WARN_MS:
-        return []
-    sev = "high" if p95 >= LATENCY_ASR_P95_CRIT_MS else "warning"
-    processing = ((overview or {}).get("queue") or {}).get("processing") or 0
-    load_high = processing >= LOAD_PROCESSING_HINT
-    return [_alert("A6", sev,
-                   f"Латентность распознавания выросла: p95 {int(p95)} мс (target=asr)",
-                   {"p95_ms": int(p95), "processing": processing,
-                    "load_high": load_high})]
-
-
-def check_a8(pods, rca_facts) -> list:
-    """A8: молчание сервиса. Под сервиса в Running, но в Loki ноль строк от него за окно,
-    хотя обычно пишет чаще (базовая линия SILENCE_SERVICES). Живой труп опаснее упавшего
-    пода: его не видит ни один другой алерт. Закрывает отложенный детектор D7 из ADR-0032.
-    Плейбук: уровень A разовый перезапуск, если сервис в allowlist, иначе эскалация."""
-    if rca_facts is None or pods is None:
-        return []  # без фактов окна или без списка подов молчание не диагностируется
-    by_service = rca_facts.get("by_service") or {}
-    out = []
-    seen = set()
-    for p in pods:
-        if p.get("phase") != "Running" or p.get("waiting_reason"):
+def check_oom(pods) -> list:
+    """Поды, чей контейнер был убит из-за нехватки памяти (OOMKilled в последнем завершении). Один
+    алерт на сервис."""
+    out, seen = [], set()
+    for p in pods or []:
+        if not p.get("oom_killed"):
             continue
         svc = k8s.pod_service(p.get("name", ""))
-        if svc not in SILENCE_SERVICES or svc in seen:
+        if svc in seen:
             continue
         seen.add(svc)
-        if by_service.get(svc, 0) == 0:
-            out.append(_alert(
-                "A8", "warning",
-                f"Сервис {svc} молчит: под Running, но за {SILENCE_MINUTES} мин ни строки логов",
-                {"service": svc, "pod": p.get("name", ""),
-                 "silence_minutes": SILENCE_MINUTES}))
+        out.append(_alert("oom_killed", "high",
+                          f"Контейнер сервиса {svc} убит по нехватке памяти (OOMKilled)",
+                          {"service": svc, "pod": p.get("name", ""), "reason": "OOMKilled"}))
     return out
 
 
-def check_a9(overview) -> list:
-    """A9: живой режим у потолка. Занятость слотов живого режима выше LIVE_OCCUPANCY_PCT
-    процента потолка (данные /api/admin/overview, блок live). Плейбук: автономных действий
-    нет (потолок железный), только эскалация-информирование с трендом."""
-    live = (overview or {}).get("live") or {}
-    active = live.get("active") or 0
-    capacity = live.get("capacity") or 0
-    if capacity <= 0:
-        return []
-    pct = int(round(100.0 * active / capacity))
-    if pct < LIVE_OCCUPANCY_PCT:
-        return []
-    return [_alert("A9", "warning",
-                   f"Живой режим у потолка: занято {active} из {capacity} слотов ({pct}%)",
-                   {"active": active, "capacity": capacity, "pct": pct})]
+def check_pending(pods, now: datetime | None = None) -> list:
+    """Поды, застрявшие в фазе Pending дольше порога: планировщик не может разместить под (нет
+    ресурсов, нет подходящего узла, не смонтирован том). Длительность ожидания оценивается по метке
+    времени начала (started_at или creation_timestamp), если она есть; при отсутствии метки под
+    считается затянувшимся, только когда явно помечен waiting_reason о невозможности планирования."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=PENDING_AGE_SECONDS)
+    out, seen = [], set()
+    for p in pods or []:
+        if p.get("phase") != "Pending":
+            continue
+        started = _parse_ts(p.get("started_at") or p.get("creation_timestamp"))
+        reason = p.get("waiting_reason")
+        # Затянувшимся считается под, который либо провёл в Pending дольше порога по метке времени,
+        # либо явно помечен планировщиком как неразмещаемый (Unschedulable). Без метки времени и без
+        # явного признака невозможности планирования под не диагностируется (это может быть штатный
+        # кратковременный Pending при обычном запуске).
+        overdue = (started is not None and started <= cutoff) or reason == "Unschedulable"
+        if not overdue:
+            continue
+        svc = k8s.pod_service(p.get("name", ""))
+        if svc in seen:
+            continue
+        seen.add(svc)
+        out.append(_alert("pending", "warning",
+                          f"Под сервиса {svc} не может быть запланирован (длительный Pending)",
+                          {"service": svc, "pod": p.get("name", ""),
+                           "reason": reason or "Pending"}))
+    return out
 
 
-def check_a10(tls_days) -> list:
-    """A10: сертификат TLS истекает. Проверка раз в сутки (значение из кэша status.py):
-    порог TLS_WARN_DAYS предупреждение, TLS_HIGH_DAYS высокая серьёзность. Плейбук:
-    эскалация с фактами (продление вне досягаемости панели)."""
+def check_restart_storm(pods, now: datetime | None = None) -> list:
+    """Рестарт-шторм: под перезапускался чаще порога за окно наблюдения, не находясь при этом в
+    CrashLoopBackOff и не будучи убитым по памяти (эти случаи покрыты отдельными детекторами). Один
+    алерт на сервис."""
+    now = now or datetime.now(timezone.utc)
+    window_start = now - timedelta(seconds=RESTART_WINDOW_SECONDS)
+    out, seen = [], set()
+    for p in pods or []:
+        if p.get("waiting_reason") == "CrashLoopBackOff" or p.get("oom_killed"):
+            continue
+        if (p.get("restarts", 0) or 0) < RESTART_STORM_THRESHOLD:
+            continue
+        when = _parse_ts(p.get("last_restart_at"))
+        if when is None or when < window_start:
+            continue
+        svc = k8s.pod_service(p.get("name", ""))
+        if svc in seen:
+            continue
+        seen.add(svc)
+        out.append(_alert("restart_storm", "warning",
+                          f"Рестарт-шторм пода сервиса {svc} ({p.get('restarts')} рестартов за окно)",
+                          {"service": svc, "pod": p.get("name", ""),
+                           "restarts": p.get("restarts", 0)}))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Симптомы уровня деплойментов.
+# ---------------------------------------------------------------------------
+
+
+def check_deploy_unavailable(deployments) -> list:
+    """Деплойменты, у которых число готовых реплик меньше желаемого: приложение работает не в полном
+    составе либо не работает вовсе. Один алерт на деплоймент с указанием готовых и желаемых реплик."""
+    out = []
+    for d in deployments or []:
+        desired = d.get("desired") or 0
+        ready = d.get("ready") or 0
+        if desired <= 0 or ready >= desired:
+            continue
+        sev = "critical" if ready == 0 else "high"
+        out.append(_alert("deploy_unavailable", sev,
+                          f"Деплоймент {d.get('name')} недоступен: готово {ready} из {desired} реплик",
+                          {"deployment": d.get("name"), "ready": ready, "desired": desired}))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Симптомы уровня узлов.
+# ---------------------------------------------------------------------------
+
+
+def check_node_disk(nodes, stats_by_node) -> list:
+    """Файловые системы узлов, заполненные выше порогов SENTINEL_DISK_WARN (предупреждение) и
+    SENTINEL_DISK_CRIT (критично) по сводке kubelet. Один алерт на файловую систему узла."""
+    import status as status_cards
+    out = []
+    for n in nodes or []:
+        u = status_cards.node_usage(n, (stats_by_node or {}).get(n.get("name")))
+        for fs in u.get("fs") or []:
+            pct = fs.get("pct") or 0
+            if pct < DISK_WARN_PCT:
+                continue
+            crit = pct >= DISK_CRIT_PCT
+            sev = "critical" if crit else "warning"
+            out.append(_alert("node_disk", sev,
+                              f"Файловая система узла {n.get('name')} ({fs.get('label')}) заполнена "
+                              f"на {pct}%",
+                              {"node": n.get("name"), "fs": fs.get("label"), "pct": pct,
+                               "crit": crit}))
+    return out
+
+
+def check_node_memory(nodes, stats_by_node) -> list:
+    """Узлы, память которых заполнена выше порога SENTINEL_MEM_WARN по сводке kubelet. Отдельно от
+    условия узла MemoryPressure: процентный порог срабатывает раньше, чем kubelet выставит давление."""
+    import status as status_cards
+    out = []
+    for n in nodes or []:
+        u = status_cards.node_usage(n, (stats_by_node or {}).get(n.get("name")))
+        pct = u.get("mem_pct")
+        if pct is None or pct < MEM_WARN_PCT:
+            continue
+        out.append(_alert("node_memory", "warning",
+                          f"Память узла {n.get('name')} заполнена на {pct}%",
+                          {"node": n.get("name"), "pct": pct}))
+    return out
+
+
+def check_node_pressure(nodes) -> list:
+    """Узлы под давлением ресурсов по условиям Kubernetes: не Ready, MemoryPressure или DiskPressure.
+    Эти условия выставляет сам kubelet, поэтому они достоверны даже когда сводка kubelet недоступна."""
+    out = []
+    for n in nodes or []:
+        name = n.get("name")
+        if not n.get("ready", True):
+            out.append(_alert("node_not_ready", "critical",
+                              f"Узел {name} не Ready",
+                              {"node": name, "condition": "NotReady"}))
+        if n.get("memory_pressure"):
+            out.append(_alert("node_pressure", "high",
+                              f"Узел {name} под давлением памяти (MemoryPressure)",
+                              {"node": name, "condition": "MemoryPressure"}))
+        if n.get("disk_pressure"):
+            out.append(_alert("node_pressure", "high",
+                              f"Узел {name} под давлением диска (DiskPressure)",
+                              {"node": name, "condition": "DiskPressure"}))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Симптомы уровня событий кластера.
+# ---------------------------------------------------------------------------
+
+
+def check_warning_events(events) -> list:
+    """Предупреждающие события кластера (type=Warning) с известными причинами планирования,
+    монтирования и запуска (FailedScheduling, FailedMount, FailedAttachVolume, BackOff, Unhealthy).
+    Один алерт на причину, чтобы поток однотипных событий давал один инцидент; в параметры кладётся
+    имя затронутого объекта и суммарный счётчик повторов."""
+    out = {}
+    for e in events or []:
+        if e.get("type") != "Warning":
+            continue
+        reason = e.get("reason")
+        if reason not in _EVENT_REASONS:
+            continue
+        acc = out.setdefault(reason, {"count": 0, "objects": set()})
+        acc["count"] += int(e.get("count", 1) or 1)
+        if e.get("object"):
+            acc["objects"].add(e.get("object"))
+    alerts_out = []
+    for reason, acc in sorted(out.items()):
+        objects = sorted(acc["objects"])
+        alerts_out.append(_alert("warning_event", "warning",
+                                 f"Предупреждающие события кластера: {reason}",
+                                 {"reason": reason, "count": acc["count"],
+                                  "objects": objects}, band="uncertain"))
+    return alerts_out
+
+
+# ---------------------------------------------------------------------------
+# Симптомы вне Kubernetes, доступные через универсальные адаптеры.
+# ---------------------------------------------------------------------------
+
+
+def check_tls_expiry(tls_days) -> list:
+    """Истечение срока действия сертификата TLS для хоста SENTINEL_TLS_HOST. Значение приходит из
+    app_adapter.tls_days_left (проверка не чаще раза в сутки). Если хост не задан, значение None и
+    детектор молчит."""
     if tls_days is None or tls_days > TLS_WARN_DAYS:
         return []
     sev = "high" if tls_days <= TLS_HIGH_DAYS else "warning"
-    return [_alert("A10", sev,
+    return [_alert("tls_expiry", sev,
                    f"Сертификат TLS истекает через {tls_days} сут",
                    {"days": tls_days})]
 
 
-def check_a11(rca_facts) -> list:
-    """A11: почта не уходит. Ошибки отправки в логах stalwart за окно (по by_service_errors
-    сервиса stalwart и сигналам отказов). Плейбук: stalwart в denylist, автономного
-    перезапуска нет, только эскалация с разделением кодов отказов получателей и сетевых
-    ошибок (это разные проблемы)."""
-    f = rca_facts or {}
-    errs = (f.get("by_service_errors") or {}).get("stalwart", 0)
-    if not errs:
-        return []
-    signals = f.get("error_signals") or {}
-    # Сетевые сигналы (недоступность релея, DNS, таймаут) против кодов отказов получателей.
-    network = sum(v for k, v in signals.items()
-                  if any(s in str(k) for s in _CONN_SIGNALS))
-    recipient = max(0, errs - network)
-    return [_alert("A11", "warning",
-                   f"Почта не уходит: {errs} ошибок отправки stalwart за окно",
-                   {"errors": errs, "network_errors": network,
-                    "recipient_errors": recipient})]
-
-
-def check_a12(rca_facts) -> list:
-    """A12: ошибки биллинга и квот. Ошибки в биллинговых путях за окно (по событиям и
-    сигналам ошибок в логах api). Плейбук: только эскалация, автономные действия запрещены
-    (любое автоматическое вмешательство в биллинг опаснее самой ошибки)."""
-    f = rca_facts or {}
-    events = f.get("event_counts") or {}
-    billing_events = sum(v for k, v in events.items()
-                         if any(s in str(k).lower()
-                                for s in ("billing", "quota", "reserve", "payment")))
-    if not billing_events:
-        return []
-    return [_alert("A12", "high",
-                   f"Ошибки в биллинговых путях: {billing_events} событий за окно",
-                   {"events": billing_events})]
+# ---------------------------------------------------------------------------
+# Прогон всего каталога.
+# ---------------------------------------------------------------------------
 
 
 def detect_all(facts: dict) -> list:
-    """Прогоняет весь каталог (этапы 3, 4 и 5) над собранными фактами. facts:
-    nodes, pods, stats_by_node, overview, rca_verdict, stuck_verdict, rca_facts,
-    tls_days, gpu_node, now."""
+    """Прогоняет весь универсальный каталог симптомов над собранными фактами. Ключи facts:
+    pods, nodes, deployments, events, stats_by_node, tls_days, now. Отсутствующий факт (None)
+    означает недоступность соответствующего источника наблюдения, и связанные детекторы честно
+    молчат, а не выдают ложное здоровье; различение слепоты и здоровья выполняет автопилот."""
     f = facts or {}
+    now = f.get("now")
     out = []
-    out += check_a1(f.get("nodes"), f.get("stats_by_node"), f.get("rca_verdict"),
-                    f.get("gpu_node") or "")
-    out += check_a2(f.get("stuck_verdict"), f.get("overview"))
-    out += check_a3(f.get("nodes"), f.get("stats_by_node"))
-    out += check_a4(f.get("pods"), f.get("now"))
-    out += check_a5(f.get("rca_verdict"))
-    out += check_a6(f.get("rca_facts"), f.get("overview"))
-    out += check_a7(f.get("rca_verdict"), f.get("pods"))
-    out += check_a8(f.get("pods"), f.get("rca_facts"))
-    out += check_a9(f.get("overview"))
-    out += check_a10(f.get("tls_days"))
-    out += check_a11(f.get("rca_facts"))
-    out += check_a12(f.get("rca_facts"))
+    out += check_crashloop(f.get("pods"))
+    out += check_image_pull(f.get("pods"))
+    out += check_oom(f.get("pods"))
+    out += check_pending(f.get("pods"), now)
+    out += check_restart_storm(f.get("pods"), now)
+    out += check_deploy_unavailable(f.get("deployments"))
+    out += check_node_disk(f.get("nodes"), f.get("stats_by_node"))
+    out += check_node_memory(f.get("nodes"), f.get("stats_by_node"))
+    out += check_node_pressure(f.get("nodes"))
+    out += check_warning_events(f.get("events"))
+    out += check_tls_expiry(f.get("tls_days"))
     return out

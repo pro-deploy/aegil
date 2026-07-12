@@ -1,181 +1,181 @@
-"""Модульные тесты детерминированного классификатора политики (ADR-0041, спецификация раздел 4).
-Без сети и без pytest. Запуск: python3 services/adminchat/test_policy.py
+"""Тесты детерминированного классификатора опасности команд и гейта автономии.
 
-Покрыты все четыре класса (read, safe_write, finance, destructive), устойчивость к обходу
-(полный путь бинаря, сокращённые имена ресурсов Kubernetes), финансовые пути, разрушительные
-паттерны и правило fail-safe (неизвестная мутирующая команда трактуется как destructive). Список
-destructive и finance это критичный код, поэтому каждый его кейс здесь зафиксирован тестом.
-
-Запрещённые правилами проекта символы (длинное тире, стрелка) экранированы в текстах: тире и
-стрелка называются словами, а не рисуются знаком.
+Проверяют не текущее поведение как эталон, а правильность классификации, с упором на реальные
+векторы обхода из ревизии: запускатели процессов, траверсал путей, SQL из файла, массовое
+удаление, обёртки оболочки и запускателей. Формат собираемый стандартным pytest.
 """
 import policy
+from policy import READ, SAFE_WRITE, DESTRUCTIVE, AUTO, CONFIRM, PROPOSE
 
 
-def _eq(name, got, want):
-    assert got == want, f"{name}: got {got!r}, want {want!r}"
+# --- Базовая классификация ----------------------------------------------------------------------
+
+def test_read_binaries():
+    assert policy.classify(["df", "-h"]) == READ
+    assert policy.classify(["du", "-sh", "/var"]) == READ
+    assert policy.classify(["kubectl", "get", "pods"]) == READ
+    assert policy.classify(["kubectl", "logs", "pod/foo"]) == READ
+    assert policy.classify(["docker", "ps"]) == READ
+    assert policy.classify(["free", "-m"]) == READ
 
 
-def test_read_class():
-    """Класс read: чистое чтение состояния кластера, дисков, процессов, образов."""
-    _eq("kubectl get pods", policy.classify(["kubectl", "get", "pods"]), policy.READ)
-    _eq("kubectl describe", policy.classify(["kubectl", "describe", "pod", "asr-x"]), policy.READ)
-    _eq("kubectl logs", policy.classify(["kubectl", "logs", "asr-x"]), policy.READ)
-    _eq("kubectl top", policy.classify(["kubectl", "top", "nodes"]), policy.READ)
-    _eq("kubectl api-resources", policy.classify(["kubectl", "api-resources"]), policy.READ)
-    _eq("kubectl explain", policy.classify(["kubectl", "explain", "pod"]), policy.READ)
-    _eq("df", policy.classify(["df", "-h", "/"]), policy.READ)
-    _eq("du", policy.classify(["du", "-sh", "/var/lib/docker"]), policy.READ)
-    _eq("free", policy.classify(["free", "-m"]), policy.READ)
-    _eq("uptime", policy.classify(["uptime"]), policy.READ)
-    _eq("ps", policy.classify(["ps", "aux"]), policy.READ)
-    _eq("ls", policy.classify(["ls", "-la", "/tmp"]), policy.READ)
-    _eq("nproc", policy.classify(["nproc"]), policy.READ)
-    _eq("lscpu", policy.classify(["lscpu"]), policy.READ)
-    _eq("cat proc", policy.classify(["cat", "/proc/loadavg"]), policy.READ)
-    _eq("docker ps", policy.classify(["docker", "ps"]), policy.READ)
-    _eq("docker images", policy.classify(["docker", "images"]), policy.READ)
-    _eq("docker system df", policy.classify(["docker", "system", "df"]), policy.READ)
-    _eq("crictl ps", policy.classify(["crictl", "ps"]), policy.READ)
-    _eq("crictl images", policy.classify(["crictl", "images"]), policy.READ)
-    _eq("crictl stats", policy.classify(["crictl", "stats"]), policy.READ)
-    _eq("journalctl", policy.classify(["journalctl", "-u", "k3s", "-n", "100"]), policy.READ)
-    print("read: ok")
+def test_safe_write_repair():
+    assert policy.classify(["kubectl", "rollout", "restart", "deployment/foo"]) == SAFE_WRITE
+    assert policy.classify(["kubectl", "scale", "deploy/foo", "--replicas=3"]) == SAFE_WRITE
+    assert policy.classify(["kubectl", "delete", "pod", "foo"]) == SAFE_WRITE
+    assert policy.classify(["systemctl", "restart", "kubelet"]) == SAFE_WRITE
+    assert policy.classify(["docker", "system", "prune", "-f"]) == SAFE_WRITE
+    assert policy.classify(["kill", "-9", "1234"]) == SAFE_WRITE
 
 
-def test_safe_write_class():
-    """Класс safe_write: ремонт без разрушения данных."""
-    _eq("rollout restart", policy.classify(["kubectl", "rollout", "restart", "deployment/asr"]),
-        policy.SAFE_WRITE)
-    _eq("delete pod", policy.classify(["kubectl", "delete", "pod", "asr-x"]), policy.SAFE_WRITE)
-    _eq("delete po сокращение", policy.classify(["kubectl", "delete", "po", "asr-x"]),
-        policy.SAFE_WRITE)
-    _eq("scale", policy.classify(["kubectl", "scale", "deployment/asr", "--replicas=2"]),
-        policy.SAFE_WRITE)
-    _eq("docker system prune", policy.classify(["docker", "system", "prune", "-f"]),
-        policy.SAFE_WRITE)
-    _eq("docker image prune", policy.classify(["docker", "image", "prune", "-a"]),
-        policy.SAFE_WRITE)
-    _eq("docker builder prune", policy.classify(["docker", "builder", "prune"]),
-        policy.SAFE_WRITE)
-    _eq("crictl rmi prune", policy.classify(["crictl", "rmi", "--prune"]), policy.SAFE_WRITE)
-    _eq("rm кеша tmp", policy.classify(["rm", "-rf", "/tmp/build-cache"]), policy.SAFE_WRITE)
-    _eq("rm var cache", policy.classify(["rm", "-rf", "/var/cache/apt/archives"]),
-        policy.SAFE_WRITE)
-    _eq("kill процесса", policy.classify(["kill", "-9", "12345"]), policy.SAFE_WRITE)
-    _eq("pkill", policy.classify(["pkill", "-f", "zombie"]), policy.SAFE_WRITE)
-    _eq("systemctl restart", policy.classify(["systemctl", "restart", "containerd"]),
-        policy.SAFE_WRITE)
-    _eq("sync", policy.classify(["sync"]), policy.SAFE_WRITE)
-    print("safe_write: ok")
+def test_destructive_devices_and_resources():
+    assert policy.classify(["mkfs", "/dev/sda1"]) == DESTRUCTIVE
+    assert policy.classify(["dd", "if=/dev/zero", "of=/dev/sda"]) == DESTRUCTIVE
+    assert policy.classify(["kubectl", "delete", "namespace", "prod"]) == DESTRUCTIVE
+    assert policy.classify(["kubectl", "delete", "pvc", "data-0"]) == DESTRUCTIVE
+    assert policy.classify(["kubectl", "delete", "deploy", "api"]) == DESTRUCTIVE
 
 
-def test_finance_class():
-    """Класс finance: тарифы, баланс, платежи, деньги тенанта. ВСЕГДА подтверждение."""
-    _eq("api tariff путь", policy.classify(["curl", "-XPOST",
-        "http://api:8765/api/admin/tariff"]), policy.FINANCE)
-    _eq("grant-minutes", policy.classify(["curl", "-XPOST",
-        "http://api:8765/api/admin/grant-minutes"]), policy.FINANCE)
-    _eq("reapply", policy.classify(["curl", "-XPOST", "http://api:8765/api/admin/reapply"]),
-        policy.FINANCE)
-    _eq("renew-plan", policy.classify(["curl", "http://api/renew-plan"]), policy.FINANCE)
-    _eq("extend-storage", policy.classify(["curl", "http://api/extend-storage"]), policy.FINANCE)
-    _eq("minute_packs таблица", policy.classify(["psql", "-c",
-        "UPDATE minute_packs SET balance=0"]), policy.FINANCE)
-    _eq("subscriptions таблица", policy.classify(["psql", "-c",
-        "UPDATE subscriptions SET plan='pro'"]), policy.FINANCE)
-    _eq("payments таблица", policy.classify(["psql", "-c", "SELECT * FROM payments"]),
-        policy.FINANCE)
-    _eq("слэш tariff", policy.classify(["/tariff", "abc", "pro"]), policy.FINANCE)
-    print("finance: ok")
+# --- Векторы обхода из ревизии ------------------------------------------------------------------
+
+def test_bypass_env_launcher():
+    # env это запускатель процессов, а не чтение: вложенная команда должна классифицироваться.
+    assert policy.classify(["env", "rm", "-rf", "/var/lib/postgresql/data"]) == DESTRUCTIVE
+    assert policy.classify(["env", "FOO=bar", "rm", "-rf", "/var/lib/postgresql"]) == DESTRUCTIVE
+    assert policy.classify(["env", "kubectl", "get", "pods"]) == READ
 
 
-def test_destructive_class():
-    """Класс destructive: необратимое. ВСЕГДА подтверждение."""
-    _eq("rm -rf данных postgres", policy.classify(["rm", "-rf", "/var/lib/postgresql/data"]),
-        policy.DESTRUCTIVE)
-    _eq("rm -rf S3-маунт", policy.classify(["rm", "-rf", "/mnt/s3/tenant-42"]),
-        policy.DESTRUCTIVE)
-    _eq("rm -rf том rancher", policy.classify(["rm", "-rf",
-        "/var/lib/rancher/k3s/storage/pvc-xxx"]), policy.DESTRUCTIVE)
-    _eq("psql DROP", policy.classify(["psql", "-c", "DROP TABLE jobs"]), policy.DESTRUCTIVE)
-    _eq("psql TRUNCATE", policy.classify(["psql", "-c", "TRUNCATE users"]), policy.DESTRUCTIVE)
-    _eq("psql DELETE без WHERE", policy.classify(["psql", "-c", "DELETE FROM jobs"]),
-        policy.DESTRUCTIVE)
-    _eq("delete namespace", policy.classify(["kubectl", "delete", "namespace", "krokki"]),
-        policy.DESTRUCTIVE)
-    _eq("delete ns сокращение", policy.classify(["kubectl", "delete", "ns", "krokki"]),
-        policy.DESTRUCTIVE)
-    _eq("delete pvc", policy.classify(["kubectl", "delete", "pvc", "data-postgres-0"]),
-        policy.DESTRUCTIVE)
-    _eq("delete pv", policy.classify(["kubectl", "delete", "pv", "pvc-xxx"]), policy.DESTRUCTIVE)
-    _eq("delete deployment", policy.classify(["kubectl", "delete", "deployment", "asr"]),
-        policy.DESTRUCTIVE)
-    _eq("delete deploy сокращение", policy.classify(["kubectl", "delete", "deploy", "asr"]),
-        policy.DESTRUCTIVE)
-    _eq("mkfs", policy.classify(["mkfs.ext4", "/dev/sdb1"]), policy.DESTRUCTIVE)
-    _eq("wipefs", policy.classify(["wipefs", "-a", "/dev/sdb"]), policy.DESTRUCTIVE)
-    _eq("dd на устройство", policy.classify(["dd", "if=/dev/zero", "of=/dev/sda"]),
-        policy.DESTRUCTIVE)
-    print("destructive: ok")
+def test_bypass_find_delete_and_exec():
+    assert policy.classify(["find", "/var/lib/postgresql", "-delete"]) == DESTRUCTIVE
+    assert policy.classify(["find", "/", "-name", "*.db", "-exec", "rm", "-rf", "{}", ";"]) == DESTRUCTIVE
+    assert policy.classify(["find", "/var/log", "-name", "*.log"]) == READ
+    assert policy.classify(["find", "/var/log", "-mtime", "+7", "-delete"]) == SAFE_WRITE
+
+
+def test_bypass_path_traversal():
+    assert policy.classify(["rm", "-rf", "/tmp/../var/lib/postgresql/data"]) == DESTRUCTIVE
+    assert policy.classify(["rm", "-rf", "/var/log/../lib/mysql"]) == DESTRUCTIVE
+    assert policy.classify(["rm", "-rf", "/var/log/nginx/../../lib/postgresql"]) == DESTRUCTIVE
+
+
+def test_bypass_sql_from_file():
+    assert policy.classify(["psql", "-f", "/tmp/wipe.sql"]) == DESTRUCTIVE
+    assert policy.classify(["psql", "-f", "-"]) == DESTRUCTIVE
+    assert policy.classify(["psql", "-c", "SELECT count(*) FROM users"]) == READ
+    assert policy.classify(["psql", "-c", "DROP TABLE users"]) == DESTRUCTIVE
+    assert policy.classify(["psql", "-c", "DELETE FROM users"]) == DESTRUCTIVE
+    assert policy.classify(["psql", "-c", "DELETE FROM users WHERE id=1"]) == DESTRUCTIVE
+    assert policy.classify(["mysql", "-e", "TRUNCATE t"]) == DESTRUCTIVE
+
+
+def test_bypass_mass_delete():
+    assert policy.classify(["kubectl", "delete", "pods", "--all"]) == DESTRUCTIVE
+    assert policy.classify(["kubectl", "delete", "pods", "-l", "app=api"]) == DESTRUCTIVE
+    assert policy.classify(["kubectl", "delete", "pods", "--all", "-n", "prod"]) == DESTRUCTIVE
+
+
+def test_bypass_shell_opaque():
+    assert policy.classify(["sh", "-c", "rm -rf /"]) == DESTRUCTIVE
+    assert policy.classify(["bash", "-c", "kubectl get pods"]) == DESTRUCTIVE
+    assert policy.classify(["bash"]) == DESTRUCTIVE
+
+
+def test_bypass_wrappers():
+    assert policy.classify(["sudo", "rm", "-rf", "/srv"]) == DESTRUCTIVE
+    assert policy.classify(["nsenter", "-t", "1", "-m", "--", "rm", "-rf", "/data"]) == DESTRUCTIVE
+    assert policy.classify(["xargs", "rm"]) == DESTRUCTIVE
+    assert policy.classify(["timeout", "30", "kubectl", "delete", "ns", "x"]) == DESTRUCTIVE
+    assert policy.classify(["nice", "-n", "5", "kubectl", "rollout", "restart", "deploy/x"]) == SAFE_WRITE
+    assert policy.classify(["sudo", "kubectl", "get", "pods"]) == READ
+
+
+def test_bypass_state_changers_not_read():
+    # mount, ip как мутаторы состояния узла, а не чтение.
+    assert policy.classify(["mount", "-o", "remount,rw", "/"]) == SAFE_WRITE
+    assert policy.classify(["ip", "link", "set", "eth0", "down"]) == SAFE_WRITE
+    assert policy.classify(["mount"]) == READ
+    assert policy.classify(["ip", "addr", "show"]) == READ
+
+
+def test_system_single_file_delete():
+    assert policy.classify(["rm", "/usr/bin/kubelet"]) == DESTRUCTIVE
+    assert policy.classify(["rm", "/etc/kubernetes/admin.conf"]) == DESTRUCTIVE
+    assert policy.classify(["rm", "-rf", "/var/log/app"]) == SAFE_WRITE
+
+
+def test_basename_normalization():
+    assert policy.classify(["/usr/bin/docker", "ps"]) == READ
+    assert policy.classify(["/snap/bin/kubectl", "delete", "ns", "x"]) == DESTRUCTIVE
+
+
+def test_k3s_wrapper():
+    assert policy.classify(["k3s", "crictl", "rmi", "--prune"]) == SAFE_WRITE
+    assert policy.classify(["k3s", "kubectl", "delete", "pvc", "x"]) == DESTRUCTIVE
 
 
 def test_fail_safe_unknown():
-    """Неизвестная мутирующая команда падает в destructive (fail-safe), а не проскакивает."""
-    _eq("неизвестный бинарь", policy.classify(["frobnicate", "--all"]), policy.DESTRUCTIVE)
-    _eq("kubectl неизвестный verb", policy.classify(["kubectl", "hackthings", "x"]),
-        policy.DESTRUCTIVE)
-    _eq("kubectl patch", policy.classify(["kubectl", "patch", "deploy/asr", "-p", "{}"]),
-        policy.DESTRUCTIVE)
-    _eq("kubectl exec", policy.classify(["kubectl", "exec", "asr-x", "--", "sh"]),
-        policy.DESTRUCTIVE)
-    _eq("kubectl apply", policy.classify(["kubectl", "apply", "-f", "x.yaml"]),
-        policy.DESTRUCTIVE)
-    _eq("docker неизвестная подкоманда", policy.classify(["docker", "frobnicate"]),
-        policy.DESTRUCTIVE)
-    _eq("rm без пути", policy.classify(["rm", "-rf", "somedir"]), policy.DESTRUCTIVE)
-    _eq("пустой argv", policy.classify([]), policy.DESTRUCTIVE)
-    _eq("не список", policy.classify("kubectl get pods"), policy.DESTRUCTIVE)
-    print("fail-safe: ok")
+    assert policy.classify(["some-unknown-tool", "--wipe-everything"]) == DESTRUCTIVE
+    assert policy.classify(["ctr", "images", "ls"]) == DESTRUCTIVE  # низкоуровневый клиент, fail-safe
 
 
-def test_bypass_resistance():
-    """Устойчивость к обходу: полный путь бинаря нормализуется по basename и не меняет класс."""
-    _eq("полный путь docker prune", policy.classify(["/usr/bin/docker", "system", "prune", "-f"]),
-        policy.SAFE_WRITE)
-    _eq("полный путь docker ps", policy.classify(["/usr/local/bin/docker", "ps"]), policy.READ)
-    _eq("полный путь kubectl delete ns", policy.classify(["/snap/bin/kubectl", "delete",
-        "namespace", "krokki"]), policy.DESTRUCTIVE)
-    _eq("полный путь rm данных", policy.classify(["/bin/rm", "-rf", "/var/lib/postgresql"]),
-        policy.DESTRUCTIVE)
-    _eq("полный путь mkfs", policy.classify(["/sbin/mkfs.xfs", "/dev/sdb"]), policy.DESTRUCTIVE)
-    # Финансовый путь распознаётся даже через http-клиент с полным путём бинаря.
-    _eq("полный путь curl tariff", policy.classify(["/usr/bin/curl",
-        "http://api/api/admin/tariff"]), policy.FINANCE)
-    # Сокращение kubectl (k) даёт тот же класс.
-    _eq("k delete ns", policy.classify(["k", "delete", "ns", "krokki"]), policy.DESTRUCTIVE)
-    _eq("k get pods", policy.classify(["k", "get", "pods"]), policy.READ)
-    print("bypass-resistance: ok")
+def test_malformed_input():
+    assert policy.classify(None) == DESTRUCTIVE
+    assert policy.classify("rm -rf /") == DESTRUCTIVE
+    assert policy.classify([]) == DESTRUCTIVE
+    assert policy.classify(["rm", ["nested"]]) == DESTRUCTIVE
+    assert policy.classify([123, "get"]) == DESTRUCTIVE
 
 
-def test_helpers():
-    """Вспомогательные предикаты политики."""
-    _eq("finance требует подтверждения", policy.requires_confirmation(policy.FINANCE), True)
-    _eq("destructive требует подтверждения", policy.requires_confirmation(policy.DESTRUCTIVE), True)
-    _eq("safe_write не требует", policy.requires_confirmation(policy.SAFE_WRITE), False)
-    _eq("read не требует", policy.requires_confirmation(policy.READ), False)
-    _eq("read это чтение", policy.is_read(policy.READ), True)
-    _eq("safe_write это мутация", policy.is_mutation(policy.SAFE_WRITE), True)
-    _eq("read не мутация", policy.is_mutation(policy.READ), False)
-    print("helpers: ok")
+# --- Защищённые ресурсы --------------------------------------------------------------------------
+
+def test_is_protected():
+    assert policy.is_protected(["kubectl", "rollout", "restart", "deploy/prod-db"], {"prod-db"})
+    assert policy.is_protected(["rm", "-rf", "/data/prod"], {"/data/prod"})
+    assert not policy.is_protected(["kubectl", "get", "pods"], {"prod-db"})
+    assert not policy.is_protected(["kubectl", "get", "pods"], set())
+
+
+# --- Гейт автономии ------------------------------------------------------------------------------
+
+def test_gate_read_always_auto():
+    assert policy.gate(["kubectl", "get", "pods"], "observe") == AUTO
+    assert policy.gate(["kubectl", "get", "pods"], "safe_repair") == AUTO
+    assert policy.gate(["kubectl", "get", "pods"], "full") == AUTO
+
+
+def test_gate_observe_proposes_mutations():
+    assert policy.gate(["kubectl", "rollout", "restart", "deploy/x"], "observe") == PROPOSE
+    assert policy.gate(["kubectl", "delete", "ns", "x"], "observe") == PROPOSE
+
+
+def test_gate_safe_repair():
+    assert policy.gate(["kubectl", "rollout", "restart", "deploy/x"], "safe_repair") == AUTO
+    assert policy.gate(["kubectl", "delete", "ns", "x"], "safe_repair") == CONFIRM
+
+
+def test_gate_full():
+    assert policy.gate(["kubectl", "rollout", "restart", "deploy/x"], "full") == AUTO
+    assert policy.gate(["kubectl", "delete", "pvc", "x"], "full") == CONFIRM
+
+
+def test_gate_protected_forces_confirm():
+    patterns = {"prod-db"}
+    assert policy.gate(["kubectl", "rollout", "restart", "deploy/prod-db"], "full", patterns) == CONFIRM
+    assert policy.gate(["kubectl", "rollout", "restart", "deploy/prod-db"], "safe_repair", patterns) == CONFIRM
+    # Без защищённого шаблона тот же безопасный ремонт исполняется автономно.
+    assert policy.gate(["kubectl", "rollout", "restart", "deploy/api"], "full", patterns) == AUTO
 
 
 if __name__ == "__main__":
-    test_read_class()
-    test_safe_write_class()
-    test_finance_class()
-    test_destructive_class()
-    test_fail_safe_unknown()
-    test_bypass_resistance()
-    test_helpers()
-    print("ВСЕ ТЕСТЫ policy ПРОЙДЕНЫ")
+    import sys
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    failed = 0
+    for fn in fns:
+        try:
+            fn()
+            print(f"ok   {fn.__name__}")
+        except AssertionError as e:
+            failed += 1
+            print(f"FAIL {fn.__name__}: {e}")
+    print(f"\n{len(fns) - failed}/{len(fns)} passed")
+    sys.exit(1 if failed else 0)

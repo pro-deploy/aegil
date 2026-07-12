@@ -1,8 +1,16 @@
-"""Модульные тесты жизненного цикла инцидентов и помесячного хранилища (ADR-0038, этап 1).
-Без сети и без pytest. Запуск: python3 services/adminchat/test_incidents_lifecycle.py
+"""Модульные тесты жизненного цикла инцидентов и помесячного хранилища kube-sentinel.
+
+Собираемый pytest-вид (функции с префиксом test_), без сети. Запуск:
+    cd services/agent-panel && python3 -m pytest -q test_incidents_lifecycle.py
+
+Покрыты: жизненный цикл группы, переоткрытие после решения, помесячное хранилище и
+совместимость со старым единым файлом, отпечаток с замаскированными числами, замена слабого
+хеша на SHA-256, вынос пути хранилища в каталог данных вне рабочего дерева и потокобезопасность
+конкурентного upsert из такта агента и обработчика.
 """
 import json
 import tempfile
+import threading
 from pathlib import Path
 
 import incidents
@@ -12,7 +20,7 @@ def _eq(name, got, want):
     assert got == want, f"{name}: got {got!r}, want {want!r}"
 
 
-V = {"status": "incident", "detectors": ["D5"], "root_cause": "отказ у цели asr на порту 9101"}
+V = {"status": "incident", "detectors": ["D5"], "root_cause": "отказ у цели app на порту 9101"}
 
 
 def _fresh():
@@ -116,12 +124,82 @@ def test_monthly_files():
     _eq("all files replayed", len(incidents.list_groups()), 3)
     titles = {g["title"] for g in incidents.list_groups()}
     assert "старый инцидент" in titles and "январский инцидент" in titles, titles
-    print("monthly files: ok")
 
 
+def test_sha256_identifier():
+    """Идентификатор группы строится на SHA-256, а не на слабом MD5/SHA1 (блокер сканера ailc).
+    Проверяем детерминизм и совпадение с эталонным SHA-256 от того же зерна."""
+    import hashlib
+    _fresh()
+    gid, _ = incidents.upsert(V)
+    g = incidents.get_group(gid)
+    # Идентификатор это INC- плюс первые восемь знаков SHA-256 от зерна ключ|момент|порядок.
+    seed = f"{g['key']}|{g['first_seen']}|0"
+    expected = "INC-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8].upper()
+    _eq("идентификатор на SHA-256", gid, expected)
+    # Тот же идентификатор не совпал бы с SHA-1 от того же зерна.
+    sha1 = "INC-" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8].upper()
+    assert gid != sha1, "идентификатор всё ещё на SHA-1"
 
-if __name__ == "__main__":
-    test_lifecycle()
-    test_reopen()
-    test_monthly_files()
-    print("incidents lifecycle: all tests passed")
+
+def test_store_path_outside_worktree(monkeypatch):
+    """Пути хранилища по умолчанию лежат в каталоге данных вне рабочего дерева агента, а не
+    внутри каталога модуля."""
+    monkeypatch.delenv("SENTINEL_INCIDENTS", raising=False)
+    monkeypatch.delenv("SENTINEL_INCIDENTS_DIR", raising=False)
+    monkeypatch.setenv("SENTINEL_STATE_DIR", "/data")
+    import importlib
+    reloaded = importlib.reload(incidents)
+    try:
+        _eq("путь единого файла в каталоге данных",
+            str(reloaded.STORE_PATH), "/data/incidents.log.jsonl")
+        _eq("каталог помесячных файлов в каталоге данных", str(reloaded.STORE_DIR), "/data")
+        module_dir = str(Path(reloaded.__file__).resolve().parent)
+        assert not str(reloaded.STORE_PATH).startswith(module_dir), \
+            f"хранилище инцидентов внутри рабочего дерева: {reloaded.STORE_PATH}"
+    finally:
+        # Возвращаем модуль в чистое состояние для остальных тестов.
+        importlib.reload(incidents)
+
+
+def test_concurrent_upsert_no_lost_events():
+    """Гонка: конкурентный upsert из многих потоков (имитация такта агента и обработчиков) не
+    теряет события и не мешает строки в помесячном журнале."""
+    tmp = _fresh()
+    threads_count = 12
+    per_thread = 20
+    barrier = threading.Barrier(threads_count)
+
+    # Отпечаток маскирует цифры (числа в причине заменяются на #), поэтому уникальность причин
+    # задаём буквами, иначе все причины схлопнулись бы в один отпечаток.
+    letters = "abcdefghijklmnopqrstuvwxyz"
+
+    def _tag(tid: int, i: int) -> str:
+        return letters[tid % 26] + letters[i % 26] + letters[(tid + i) % 26]
+
+    def worker(tid: int):
+        barrier.wait()
+        for i in range(per_thread):
+            v = {"status": "incident", "detectors": ["D5"],
+                 "root_cause": f"уникальная причина поток {_tag(tid, i)}"}
+            incidents.upsert(v)
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in range(threads_count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    expected = threads_count * per_thread
+    # Каждая причина уникальна, значит групп ровно столько же, сколько upsert.
+    _eq("все группы созданы", len(incidents.list_groups()), expected)
+    # Все строки журнала валидны: конкурентная запись не порвала строки.
+    month_files = sorted(tmp.glob("incidents-????-??.log.jsonl"))
+    lines = []
+    for p in month_files:
+        lines += [l for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+    _eq("все события в журнале", len(lines), expected)
+    for l in lines:
+        json.loads(l)
+    # После перезапуска восстанавливаются все группы.
+    incidents.load()
+    _eq("все группы восстановлены", len(incidents.list_groups()), expected)

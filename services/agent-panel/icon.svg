@@ -1,5 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="KROKKI">
-  <rect width="512" height="512" rx="116" fill="#FF5000"/>
-  <path d="M180 132 V380 M180 256 L318 132 M180 256 L326 380"
-        stroke="#161210" stroke-width="46" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="kube-sentinel">
+  <rect width="512" height="512" rx="116" fill="#0f1a1e"/>
+  <!-- Дозорный щит: контур-шеврон, внутри пульс наблюдения. Спокойный технический знак. -->
+  <path d="M256 84 L404 148 V276 C404 356 340 410 256 440 C172 410 108 356 108 276 V148 Z"
+        fill="none" stroke="#2dd4bf" stroke-width="26" stroke-linejoin="round"/>
+  <path d="M158 268 H214 L242 210 L288 320 L314 268 H354"
+        fill="none" stroke="#2dd4bf" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

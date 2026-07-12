@@ -6,18 +6,18 @@
 объясняет по-русски. Панель наружу не публикуется (ClusterIP без Ingress), вход закрыт токеном
 оператора, доступ идёт через закрытый контур.
 
-ENV:
-  PANEL_OPERATORS   аллоу-лист операторов «имя:токен,...» (или PANEL_TOKEN плюс PANEL_OPERATOR)
-  RCA_URL           адрес сервиса разбора логов (см. config.py)
-  LLM_SERVICE_URL   адрес языковой модели (см. llm.py)
-  PANEL_HOST        интерфейс прослушивания (default: 127.0.0.1, только localhost/туннель)
-  PANEL_NO_LLM=1    принудительный фолбэк без планирования (одна команда оператора)
+Конфигурация продукта задаётся переменными окружения с префиксом SENTINEL_ (см. config.py и
+docs/CONVENTIONS.md). Единственный обязательный параметр самой панели это SENTINEL_OPERATORS,
+аллоу-лист операторов вида «имя:токен,...»: без хотя бы одного оператора панель не поднимается
+(fail-closed). Если языковая модель не настроена (нет ключа или адреса), агентный цикл вырождается
+в исполнителя одиночной команды оператора без планирования.
 """
 from __future__ import annotations
 
 import hmac
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -26,19 +26,26 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 import agent_exec
+import audit
 import autopilot
 import config
 import guards
 import incidents
+import injection
 import k8s
-import llm
+import llm_metrics
+import outcomes
+import rca_client
+import slo
+import updater
 
 HELP = (
     "Панель агента kube-sentinel. Пишите запрос на естественном языке, агент сам разберётся.\n"
     "Примеры: «сколько места на узлах и почисти неиспользуемые образы», «покажи упавшие поды»,\n"
     "«перезапусти сервис X», «что происходит в кластере».\n"
     "Команды: /help этот список, /status сводка кластера, /health здоровье панели,\n"
-    "/agent состояние агента, /mode auto|manual режим, /report отчёт агента за сутки."
+    "/agent состояние агента, /mode observe|safe_repair|full уровень автономии,\n"
+    "/report отчёт агента за сутки."
 )
 
 # Каталог для палитры интерфейса (ввод «/»). Только инфраструктурные команды продукта, без
@@ -47,17 +54,23 @@ COMMAND_CATALOG = [
     {"name": "/help", "desc": "список команд и подсказка", "confirm": False},
     {"name": "/status", "desc": "сводка состояния кластера", "confirm": False},
     {"name": "/health", "desc": "здоровье панели и RCA", "confirm": False},
-    {"name": "/agent", "desc": "состояние агента: режим, бюджет, гарды", "confirm": False},
-    {"name": "/mode", "desc": "переключить режим auto или manual", "confirm": False},
+    {"name": "/agent", "desc": "состояние агента: уровень автономии, бюджет, гарды", "confirm": False},
+    {"name": "/mode", "desc": "уровень автономии observe, safe_repair или full", "confirm": False},
     {"name": "/report", "desc": "отчёт агента за сутки", "confirm": False},
 ]
+
+# Ограничение частоты неудачных входов: защита от перебора токена. Простой счётчик по источнику.
+_MAX_AUTH_FAILURES = int(os.getenv("SENTINEL_AUTH_MAX_FAILURES", "10"))
+_AUTH_WINDOW_SECONDS = int(os.getenv("SENTINEL_AUTH_WINDOW_SECONDS", "300"))
+_auth_failures: dict = {}
+_auth_lock = threading.Lock()
 
 
 def _load_operators() -> dict:
     """Аллоу-лист операторов: каждый входит своим токеном, действие атрибутируется ему в аудите.
     Панель fail-closed: без единого валидного оператора не поднимается, дефолтного пароля нет."""
     ops: dict = {}
-    raw = os.getenv("PANEL_OPERATORS", os.getenv("ADMINCHAT_OPERATORS", "")).strip()
+    raw = os.getenv("SENTINEL_OPERATORS", "").strip()
     if raw:
         for pair in raw.split(","):
             if ":" not in pair:
@@ -66,15 +79,12 @@ def _load_operators() -> dict:
             name, token = name.strip(), token.strip()
             if name and token:
                 ops[token] = name
-    single = os.getenv("PANEL_TOKEN", os.getenv("ADMINCHAT_TOKEN", "")).strip()
-    if single:
-        ops[single] = os.getenv("PANEL_OPERATOR", "operator")
     return ops
 
 
 OPERATORS = _load_operators()
 if not OPERATORS:
-    raise RuntimeError("Задайте PANEL_OPERATORS (имя:токен,...) или PANEL_TOKEN: "
+    raise RuntimeError("Задайте SENTINEL_OPERATORS (имя:токен,...): "
                        "панель не запускается без хотя бы одного оператора")
 RCA_URL = config.RCA_URL
 BASE_DIR = Path(__file__).parent
@@ -94,8 +104,34 @@ def _startup() -> None:
     threading.Thread(target=autopilot.run_loop, args=(RCA_URL,), daemon=True).start()
 
 
+def _source(request: Request) -> str:
+    return request.client.host if request.client else "-"
+
+
+def _rate_limited(src: str, now: float) -> bool:
+    """Слишком много неудачных входов с источника за окно: блокируем перебор токена."""
+    with _auth_lock:
+        count, first = _auth_failures.get(src, (0, now))
+        if now - first > _AUTH_WINDOW_SECONDS:
+            count, first = 0, now
+        return count >= _MAX_AUTH_FAILURES
+
+
+def _note_auth_failure(src: str, now: float) -> None:
+    with _auth_lock:
+        count, first = _auth_failures.get(src, (0, now))
+        if now - first > _AUTH_WINDOW_SECONDS:
+            count, first = 0, now
+        _auth_failures[src] = (count + 1, first)
+
+
 def _auth(request: Request) -> str:
-    """Возвращает имя оператора по токену. Сравнение за постоянное время со всеми операторами."""
+    """Возвращает имя оператора по токену. Сравнение за постоянное время со всеми операторами.
+    Неудачные попытки ограничиваются по частоте и пишутся в аудит (обнаружение перебора)."""
+    now = time.time()
+    src = _source(request)
+    if _rate_limited(src, now):
+        raise HTTPException(status_code=429, detail="too many failed attempts")
     raw = request.headers.get("authorization", "")
     tok = raw[7:].strip() if raw.lower().startswith("bearer ") else raw.strip()
     matched = ""
@@ -103,15 +139,13 @@ def _auth(request: Request) -> str:
         if tok and hmac.compare_digest(tok, token):
             matched = name
     if not matched:
+        _note_auth_failure(src, now)
+        audit.audit_write("?", "auth.fail", {"source": src}, "panel", False,
+                          "неудачная аутентификация", op_type=audit.OP_READ)
         raise HTTPException(status_code=401, detail="unauthorized")
+    with _auth_lock:
+        _auth_failures.pop(src, None)  # успешный вход сбрасывает счётчик источника
     return matched
-
-
-def _agent_llm():
-    """Функция завершения модели для агентного цикла либо None (фолбэк без планирования)."""
-    if os.getenv("PANEL_NO_LLM", os.getenv("ADMINCHAT_AGENT_NO_LLM", "")).strip() in ("1", "true", "yes"):
-        return None
-    return llm.complete
 
 
 class ChatReq(BaseModel):
@@ -132,6 +166,10 @@ class AgentRunReq(BaseModel):
 
 class AgentModeReq(BaseModel):
     mode: str
+
+
+class UpdateApplyReq(BaseModel):
+    confirm: bool = False
 
 
 @app.get("/")
@@ -201,7 +239,7 @@ def chat(req: ChatReq, request: Request) -> dict:
         return {"type": "message", "text": "Пустой запрос. Напишите, что нужно сделать, или /help."}
     if m == "/help":
         return {"type": "message", "text": HELP}
-    result = agent_exec.run(m.lstrip("/"), operator, llm_complete=_agent_llm())
+    result = agent_exec.run(m.lstrip("/"), operator)
     return _agent_reply(result)
 
 
@@ -216,7 +254,7 @@ def confirm(req: ConfirmReq, request: Request) -> dict:
 @app.post("/agent/run")
 def agent_run(req: AgentRunReq, request: Request) -> dict:
     operator = _auth(request)
-    return agent_exec.run(req.message, operator, llm_complete=_agent_llm())
+    return agent_exec.run(req.message, operator)
 
 
 @app.post("/agent/confirm")
@@ -241,6 +279,177 @@ def agent_state(request: Request) -> dict:
 def commands_list(request: Request) -> dict:
     _auth(request)
     return {"commands": COMMAND_CATALOG}
+
+
+# --- Операторская консоль: обзор кластера, ассистент без tool-calling, ремонт кнопкой ---
+# Ассистент намеренно НЕ использует протокол вызова инструментов: он опирается на простой
+# диалог с моделью и на инъекцию актуального состояния кластера в системную подсказку. Так
+# консоль работает даже с моделями без поддержки tool-calling (например gemma в vLLM без
+# парсера инструментов), а сами действия по кластеру выполняются детерминированными кнопками
+# через RBAC панели, а не догадками модели.
+
+class AskReq(BaseModel):
+    message: str
+    history: Optional[list] = None
+
+
+class RestartReq(BaseModel):
+    name: str
+
+
+def _cluster_context() -> str:
+    """Компактная сводка состояния кластера для системной подсказки ассистента."""
+    lines: list = []
+    try:
+        groups = incidents.list_groups()
+    except Exception:
+        groups = []
+    if groups:
+        lines.append("Активные инциденты:")
+        for g in groups[:8]:
+            lines.append("- [%s/%s] %s (детекторы: %s, событий: %s)" % (
+                g.get("band", ""), g.get("status", ""), g.get("title", ""),
+                ",".join(g.get("detectors") or []), g.get("count", 0)))
+    else:
+        lines.append("Активных инцидентов нет.")
+    pods = k8s.list_pods()
+    if pods:
+        bad = [p for p in pods if p.get("phase") != "Running" or p.get("waiting_reason") or p.get("restarts")]
+        lines.append("Проблемные поды:" if bad else "Все поды в норме.")
+        for p in bad[:12]:
+            reason = p.get("waiting_reason") or ("OOMKilled" if p.get("oom_killed") else p.get("phase"))
+            lines.append("- %s: %s, рестартов %s" % (p.get("name"), reason, p.get("restarts")))
+    return "\n".join(lines)
+
+
+@app.get("/overview")
+def overview(request: Request) -> dict:
+    """Состояние пространства имён для консоли: поды и деплойменты. Только чтение."""
+    _auth(request)
+    return {
+        "namespace": config.NAMESPACE,
+        "autonomy": config.autonomy(),
+        "pods": k8s.list_pods() or [],
+        "deployments": k8s.list_deployments() or [],
+    }
+
+
+@app.post("/ask")
+def ask(req: AskReq, request: Request) -> dict:
+    """Чат-ассистент SRE. Простой диалог с моделью без инструментов, с инъекцией сводки
+    кластера в системную подсказку. Работает с любой OpenAI-совместимой моделью."""
+    _auth(request)
+    msg = (req.message or "").strip()
+    if not msg:
+        return {"answer": "Пустой вопрос."}
+    if not config.LLM_MODEL:
+        return {"answer": "Модель не настроена (SENTINEL_LLM_MODEL пуст)."}
+    # Состояние кластера собрано из логов подов, то есть из недоверенного источника: строка лога
+    # может содержать инъекцию в подсказку. Заключаем контекст в ограду данных и помечаем попытки
+    # инъекции, чтобы модель трактовала его как данные, а не как указания (см. injection.py).
+    ctx = injection.sanitize(_cluster_context(), "состояние кластера и логи подов")
+    t0 = time.perf_counter()
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url=(config.LLM_BASE_URL or None),
+                        api_key=(config.LLM_API_KEY or "sk-noauth"),
+                        timeout=float(config.LLM_TIMEOUT))
+        system = ("Ты ассистент SRE в операторской консоли kube-sentinel. Отвечай по-русски, "
+                  "кратко и по делу, давай конкретные шаги и команды kubectl. Ниже актуальное "
+                  "состояние кластера, опирайся на него как на данные.\n\n" + ctx)
+        messages = [{"role": "system", "content": system}]
+        for h in (req.history or [])[-6:]:
+            role, content = h.get("role"), h.get("content")
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": str(content)[:4000]})
+        messages.append({"role": "user", "content": msg})
+        r = client.chat.completions.create(model=config.LLM_MODEL, messages=messages,
+                                           max_tokens=800, temperature=0.3)
+        dt = (time.perf_counter() - t0) * 1000.0
+        usage = getattr(r, "usage", None)
+        llm_metrics.record(config.LLM_MODEL, dt,
+                           getattr(usage, "prompt_tokens", 0) or 0,
+                           getattr(usage, "completion_tokens", 0) or 0, ok=True)
+        return {"answer": (r.choices[0].message.content or "").strip() or "(пустой ответ модели)"}
+    except Exception as exc:
+        llm_metrics.record(config.LLM_MODEL, (time.perf_counter() - t0) * 1000.0,
+                           ok=False, error=str(exc))
+        return {"answer": "ошибка обращения к модели: %s" % exc}
+
+
+@app.post("/action/restart")
+def action_restart(req: RestartReq, request: Request) -> dict:
+    """Детерминированный перезапуск деплоймента (rollout restart) через RBAC панели. Проверка
+    allowlist/denylist в k8s.rollout_restart, аудит факта."""
+    operator = _auth(request)
+    import datetime as _dt
+    now_iso = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    res = k8s.rollout_restart((req.name or "").strip(), now_iso)
+    ok, detail = (res if isinstance(res, tuple) else (None, "нет данных"))
+    audit.audit_write(operator, "action.restart", {"name": req.name}, req.name or "?",
+                      bool(ok), str(detail), op_type=audit.OP_EXECUTE, danger_class="safe_write")
+    return {"ok": bool(ok), "detail": detail}
+
+
+class PodLogsReq(BaseModel):
+    pod: str
+    lines: int = 120
+
+
+@app.post("/pod/logs")
+def pod_logs(req: PodLogsReq, request: Request) -> dict:
+    """Хвост логов пода по имени. Только чтение, для просмотра из консоли."""
+    _auth(request)
+    pod = (req.pod or "").strip()
+    if not k8s._NAME_RE.match(pod):
+        return {"ok": False, "message": "неверное имя пода"}
+    tail = k8s.pod_log_tail(pod, lines=min(500, max(10, int(req.lines or 120))))
+    if tail is None:
+        return {"ok": False, "message": "логи недоступны (панель вне кластера или под исчез)"}
+    return {"ok": True, "pod": pod, "logs": tail}
+
+
+@app.get("/slo")
+def slo_state(request: Request) -> dict:
+    """Состояние целей уровня обслуживания: индикатор, бюджет ошибок, скорость прожигания и
+    уровень серьёзности по свежему окну RCA. Доля ошибок берётся из фактов детерминированного
+    разбора. Только чтение."""
+    _auth(request)
+    error_rate = 0.0
+    try:
+        out = rca_client.analyze(config.RCA_URL, {"use_baseline": False, "minutes": 15})
+        error_rate = float((out.get("facts", {}) or {}).get("error_rate", 0.0) or 0.0)
+    except Exception:
+        pass
+    return slo.summary(error_rate)
+
+
+@app.get("/llm/metrics")
+def llm_metrics_state(request: Request) -> dict:
+    """Наблюдаемость инференса модели: задержки, токены, стоимость, доля ошибок и дрейф. Только
+    чтение (слой LLMOps)."""
+    _auth(request)
+    return llm_metrics.summary()
+
+
+@app.get("/update/check")
+def update_check(request: Request) -> dict:
+    """Проверка канала самообновления: текущая и доступная версия продукта. Только чтение."""
+    _auth(request)
+    return updater.check()
+
+
+@app.post("/update/apply")
+def update_apply(req: UpdateApplyReq, request: Request) -> dict:
+    """Применение обновления. Высокорисковая операция: выполняется ТОЛЬКО при явном подтверждении
+    владельца (confirm=true), автономно никогда. Факт применения пишется в аудит."""
+    operator = _auth(request)
+    res = updater.apply(bool(req.confirm), operator)
+    if req.confirm:
+        audit.audit_write(operator, "update.apply", {"confirm": True}, "panel",
+                          True, str(res.get("message") or res.get("deployments") or res),
+                          op_type=audit.OP_EXECUTE, danger_class="destructive")
+    return res
 
 
 def _incident_pod(g: dict) -> str | None:
@@ -315,7 +524,7 @@ def _run_incident_agent(key: str, operator: str) -> dict:
     if not g:
         return {"ok": False, "message": "Инцидент не найден."}
     verdict = g.get("last_verdict") or {}
-    trace = agent_exec.investigate(verdict, operator=operator, llm_complete=_agent_llm())
+    trace = agent_exec.investigate(verdict, operator=operator)
     steps = trace.get("steps") or []
     done = [s.get("summary", "") for s in steps if s.get("step") == "done" and s.get("summary")]
     executed = sum(1 for s in steps if s.get("outcome") == "executed")
@@ -326,6 +535,9 @@ def _run_incident_agent(key: str, operator: str) -> dict:
     incidents.add_note(key or "", operator, note)
     if executed and not pending:
         incidents.resolve_operator(key or "", operator, "agent")
+        # Замыкание активного обучения: успешно устранённый инцидент становится размеченным
+        # примером (вердикт плюс действие плюс исход) для дообучения маршрутизатора.
+        outcomes.record(verdict, summary, resolved=True)
     incidents.mark_read(key)
     return {"ok": True, "trace": trace, "mode": trace.get("mode"),
             "unread": incidents.unread_count()}

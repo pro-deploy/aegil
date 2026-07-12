@@ -1,274 +1,333 @@
-"""Модульные тесты агентного исполнителя команд (ADR-0041, спецификация разделы 3, 4, 5, 6).
-Без сети и без pytest. Запуск: python3 services/adminchat/test_agent_exec.py
+"""Тесты агентного исполнителя команд. Без сети: клиент модели подменяется фейком, сценирующим
+вызовы инструментов, а исполнение (k8s API и node-agent), гарды и аудит мокаются через monkeypatch.
 
-Модель и HTTP-транспорт node-agent мокаются, поэтому тесты детерминированы и не выходят в сеть.
-Проверяется: auto-режим исполняет safe_write и НЕ исполняет finance и destructive (они уходят в
-отложенное подтверждение); manual-режим ничего не исполняет сам (всё предложения); observe не
-считается в бюджет гардов; фолбэк без модели исполняет одну команду оператора; гарды вызываются
-ПЕРЕД мутацией.
-
-Запрещённые правилами проекта символы (длинное тире, стрелка) в текстах не используются: переходы
-и следствия названы словами.
+Проверяется: полный агентный цикл (наблюдение, действие, завершение); детерминированный гейт по
+уровням автономии (observe только предлагает, safe_repair исполняет безопасный ремонт из allowlist,
+destructive уходит в отложенное подтверждение); observe с мутацией эскалируется в act; блокировка
+гардом; исполнение подтверждённой команды; продуктовый слой allowlist и denylist перезапуска;
+фолбэк одиночной команды без модели; аудит чтений и постановки в подтверждение.
 """
-import tempfile
-from pathlib import Path
+import os
+
+os.environ.setdefault("SENTINEL_LLM_API_KEY", "test-key")
+
+import pytest
 
 import agent_exec
-import guards
+import config
+import llm
+import policy
 
 
-def _eq(name, got, want):
-    assert got == want, f"{name}: got {got!r}, want {want!r}"
+# --- Фейк клиента модели ------------------------------------------------------------------------
+
+class _FakeClient:
+    def __init__(self, turns):
+        self.turns = list(turns)
+        self.sent = []
+
+    def start(self, system, tools):
+        return llm.Conversation(system=system, tools=tools)
+
+    def send_user(self, conv, text):
+        conv.messages.append({"role": "user", "content": text})
+
+    def send_tool_results(self, conv, results):
+        self.sent.append(results)
+
+    def run(self, conv, stream=False, on_text=None):
+        return self.turns.pop(0)
 
 
-def _fresh_guards():
-    """Свежее состояние гардов во временном файле, чтобы тесты не влияли друг на друга и на прод."""
-    tmp = Path(tempfile.mkdtemp())
-    guards.STATE_PATH = tmp / "agent-guards.log.jsonl"
-    guards.load()
-    return tmp
+def _turn(*calls, text="", stop="tool_use"):
+    tcs = [llm.ToolCall(id=c[0], name=c[1], input=c[2]) for c in calls]
+    return llm.Turn(text=text, tool_calls=tcs, stop_reason=stop if tcs else "end")
 
 
-def _fresh_mode(mode):
-    """Свежий файл режима во временной директории."""
-    tmp = Path(tempfile.mkdtemp())
-    agent_exec._MODE_PATH = tmp / "agent-mode.txt"
-    agent_exec.set_mode(mode)
-    return tmp
+# --- Общая изоляция: пути состояния в tmp, аудит и гарды под контролем ---------------------------
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_exec, "_PENDING_PATH", tmp_path / "pending.json")
+    monkeypatch.setattr(agent_exec, "_AUTONOMY_PATH", tmp_path / "autonomy")
+    # Аудит: перехватываем вызовы вместо записи в файл.
+    calls = {"read": [], "write": [], "pending": []}
+    monkeypatch.setattr(agent_exec.audit, "audit_read",
+                        lambda *a, **k: calls["read"].append((a, k)))
+    monkeypatch.setattr(agent_exec.audit, "audit_write",
+                        lambda *a, **k: calls["write"].append((a, k)))
+    monkeypatch.setattr(agent_exec.audit, "audit_pending",
+                        lambda *a, **k: calls["pending"].append((a, k)))
+    # Гарды: по умолчанию всё разрешено, фиксация без файла.
+    monkeypatch.setattr(agent_exec.guards, "check", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(agent_exec.guards, "record_attempt", lambda *a, **k: None)
+    monkeypatch.setattr(agent_exec.guards, "record_result", lambda *a, **k: None)
+    # Кластер: два узла, типизированные операции успешны.
+    monkeypatch.setattr(agent_exec.k8s, "list_nodes",
+                        lambda: [{"name": "cp-1", "role": "control-plane"}, {"name": "w-1", "role": "worker"}])
+    monkeypatch.setattr(agent_exec.k8s, "list_pods", lambda: [{"name": "api-abc", "phase": "Running"}])
+    monkeypatch.setattr(agent_exec.k8s, "rollout_restart", lambda name, iso: (True, "перезапущено"))
+    monkeypatch.setattr(agent_exec.k8s, "delete_pod", lambda pod: (True, "удалён"))
+    monkeypatch.setattr(agent_exec.k8s, "pod_service", lambda p: p.rsplit("-", 1)[0])
+    monkeypatch.setattr(agent_exec.k8s, "resolve_node", lambda n: n)
+    monkeypatch.setattr(agent_exec.k8s, "get_node_agent_endpoint", lambda n: f"http://{n}:9110")
+    monkeypatch.setattr(agent_exec.config, "NODEAGENT_TOKEN", "tok")
+    # Узловой агент: успешный ответ.
+    monkeypatch.setattr(agent_exec, "_run_node",
+                        lambda node, argv, timeout=30: {"exit_code": 0, "stdout": "готово", "node": node})
+    return calls
 
 
-def _reset_pending():
-    agent_exec.PENDING.clear()
+def _autonomy(level):
+    agent_exec.set_mode(level)
 
 
-# node-agent считается доступным в тестах (токен задан), а транспорт мокается через http_post.
-agent_exec.NODEAGENT_TOKEN = "test-token"
+# --- Полный цикл --------------------------------------------------------------------------------
 
-
-# Подмена дискавери endpoint node-agent, чтобы _run_node_agent не ходил в Kubernetes API.
-import k8s
-k8s.get_node_agent_endpoint = lambda node: f"http://10.0.0.1:9110"
-
-
-# Мок HTTP-транспорта node-agent: возвращает успешный ответ по контракту, записывает вызовы.
-class FakeNodeAgent:
-    def __init__(self, exit_code=0):
-        self.calls = []
-        self.exit_code = exit_code
-
-    def __call__(self, url, body, headers):
-        self.calls.append({"url": url, "body": body, "headers": headers})
-        return {"exit_code": self.exit_code, "stdout": "готово", "stderr": "",
-                "duration_ms": 5, "node": body.get("argv", ["?"])[0] and "gpu"}
-
-
-def _model_script(calls):
-    """Мок модели: отдаёт заранее заданную последовательность JSON-ответов, по одному на вызов."""
-    seq = list(calls)
-
-    def _complete(prompt):
-        if not seq:
-            return '{"tool":"done","summary":"больше нечего делать"}'
-        return seq.pop(0)
-
-    return _complete
-
-
-# ---------------------------------------------------------------------------
-
-
-def test_auto_executes_safe_write():
-    """auto-режим: safe_write (rollout restart) исполняется сразу через гарды и аудит."""
-    _fresh_guards()
-    _fresh_mode("auto")
-    _reset_pending()
-    # Настоящее исполнение мутации в кластере деградирует (вне кластера k8s вернёт ok=None),
-    # но нам важно, что политика РАЗРЕШИЛА исполнение (outcome executed или failed, не pending).
-    step = agent_exec._handle_act(
-        {"argv": ["kubectl", "rollout", "restart", "deployment/asr"], "target": "cluster",
-         "why": "asr тормозит"}, operator="agent")
-    _eq("класс safe_write", step["class"], "safe_write")
-    assert step["outcome"] in ("executed", "failed"), step
-    assert step["outcome"] != "pending_confirm", "safe_write не должен уходить в подтверждение"
-    print("auto исполняет safe_write: ok")
-
-
-def test_auto_defers_finance():
-    """auto-режим: finance НЕ исполняется автономно, уходит в отложенное подтверждение."""
-    _fresh_guards()
-    _fresh_mode("auto")
-    _reset_pending()
-    step = agent_exec._handle_act(
-        {"argv": ["curl", "-XPOST", "http://api/api/admin/tariff"], "target": "cluster",
-         "why": "смена тарифа"}, operator="agent")
-    _eq("класс finance", step["class"], "finance")
-    _eq("не исполнено, а отложено", step["outcome"], "pending_confirm")
-    assert step["confirm_token"] in agent_exec.PENDING, "токен должен лежать в PENDING"
-    print("auto откладывает finance: ok")
-
-
-def test_auto_defers_destructive():
-    """auto-режим: destructive НЕ исполняется автономно, уходит в отложенное подтверждение."""
-    _fresh_guards()
-    _fresh_mode("auto")
-    _reset_pending()
-    step = agent_exec._handle_act(
-        {"argv": ["kubectl", "delete", "namespace", "krokki"], "target": "cluster",
-         "why": "зачистка"}, operator="agent")
-    _eq("класс destructive", step["class"], "destructive")
-    _eq("не исполнено, а отложено", step["outcome"], "pending_confirm")
-    assert step["confirm_token"] in agent_exec.PENDING
-    print("auto откладывает destructive: ok")
-
-
-def test_manual_proposes_everything():
-    """manual-режим: ничего не исполняется сам, любая мутация возвращается предложением."""
-    _fresh_guards()
-    _fresh_mode("manual")
-    _reset_pending()
-    # safe_write в manual становится предложением, а не исполнением.
-    step = agent_exec._handle_act(
-        {"argv": ["kubectl", "delete", "pod", "asr-x"], "target": "cluster", "why": "рестарт"},
-        operator="agent")
-    _eq("класс safe_write", step["class"], "safe_write")
-    _eq("в ручном режиме предложено", step["outcome"], "proposed")
-    assert step["confirm_token"] in agent_exec.PENDING
-    # finance в manual тоже предложение (pending_confirm), не исполнение.
-    step2 = agent_exec._handle_act(
-        {"argv": ["/tariff", "abc", "pro"], "why": "смена тарифа"}, operator="agent")
-    _eq("finance в ручном тоже не исполнено", step2["outcome"], "pending_confirm")
-    print("manual всё предлагает: ok")
-
-
-def test_observe_not_in_budget():
-    """observe не считается в бюджет гардов и исполняется всегда, даже при auto."""
-    _fresh_guards()
-    _fresh_mode("auto")
-    _reset_pending()
-    fake = FakeNodeAgent()
-    step = agent_exec._handle_observe(
-        {"argv": ["df", "-h", "/"], "target": "gpu"}, http_post=fake)
-    _eq("класс read", step["class"], "read")
-    _eq("не считается в бюджет", step["counts_budget"], False)
-    # Бюджет гардов не тронут наблюдением.
-    g = guards.state_summary()
-    _eq("бюджет не израсходован наблюдением", g["budget_left"], g["budget_total"])
-    assert len(fake.calls) == 1, "наблюдение на узле должно идти через node-agent"
-    print("observe не в бюджете: ok")
-
-
-def test_observe_mutating_becomes_act():
-    """observe с мутирующей командой перенаправляется в act (классификатор подтверждает read)."""
-    _fresh_guards()
-    _fresh_mode("auto")
-    _reset_pending()
-    step = agent_exec._handle_observe(
-        {"argv": ["kubectl", "delete", "namespace", "krokki"], "target": "cluster"})
-    # Команда мутирующая (destructive), поэтому уходит на подтверждение, а не исполняется как чтение.
-    _eq("мутирующее наблюдение стало act", step["outcome"], "pending_confirm")
-    _eq("класс destructive", step["class"], "destructive")
-    print("observe мутирующее становится act: ok")
-
-
-def test_guards_called_before_mutation():
-    """Гарды вызываются ПЕРЕД исполнением мутации: исчерпанный бюджет блокирует safe_write."""
-    _fresh_guards()
-    _fresh_mode("auto")
-    _reset_pending()
-    # Забиваем бюджет действий гарда до предела.
-    import time
-    now = time.time()
-    for i in range(guards.BUDGET_PER_HOUR):
-        guards.record_attempt(f"fill-{i}", "restart", now=now)
-    step = agent_exec._handle_act(
-        {"argv": ["kubectl", "rollout", "restart", "deployment/asr"], "target": "cluster",
-         "why": "рестарт"}, operator="agent")
-    _eq("класс safe_write", step["class"], "safe_write")
-    _eq("гард заблокировал по бюджету", step["outcome"], "blocked")
-    assert "бюджет" in step["message"], step["message"]
-    print("гарды перед мутацией: ok")
-
-
-def test_fallback_no_model_single_command():
-    """Фолбэк без модели исполняет ОДНУ команду оператора без планирования."""
-    _fresh_guards()
-    _fresh_mode("auto")
-    _reset_pending()
-    # Чтение через фолбэк: одна команда, класс read, шаг observe.
-    res = agent_exec.run("df -h /", operator="op", llm_complete=None)
-    _eq("без модели", res["model"], False)
-    _eq("один шаг", len(res["steps"]), 1)
-    _eq("шаг наблюдения", res["steps"][0]["step"], "observe")
-    # Мутация через фолбэк: одна команда, финансовая уходит в подтверждение, не исполняется.
-    res2 = agent_exec.run("curl http://api/api/admin/tariff", operator="op", llm_complete=None)
-    _eq("финансовая отложена в фолбэке", res2["steps"][0]["outcome"], "pending_confirm")
-    print("фолбэк одной командой: ok")
-
-
-def test_confirm_executes_pending():
-    """Подтверждение исполняет отложенную команду одноразовым токеном; повтор токена отклонён."""
-    _fresh_guards()
-    _fresh_mode("auto")
-    _reset_pending()
-    step = agent_exec._handle_act(
-        {"argv": ["kubectl", "delete", "pod", "asr-x"], "target": "cluster", "why": "рестарт"},
-        operator="agent")
-    # Переведём режим в manual, чтобы safe_write ушёл в proposed с токеном.
-    # (тут auto, поэтому safe_write уже исполнился; сделаем finance для отложенного токена)
-    step_fin = agent_exec._handle_act(
-        {"argv": ["/tariff", "abc", "pro"], "why": "смена тарифа"}, operator="agent")
-    token = step_fin["confirm_token"]
-    res = agent_exec.confirm(token, operator="operator1")
-    assert "step" in res, res
-    _eq("токен одноразовый: повтор отклонён", agent_exec.confirm(token, "operator1")["ok"], False)
-    print("подтверждение отложенного: ok")
-
-
-def test_full_loop_with_model():
-    """Полный цикл с моделью: наблюдение, объяснение, действие, завершение. finance по пути
-    уходит в подтверждение и не исполняется автономно."""
-    _fresh_guards()
-    _fresh_mode("auto")
-    _reset_pending()
-    fake = FakeNodeAgent()
-    model = _model_script([
-        '{"tool":"observe","argv":["df","-h","/"],"target":"gpu"}',
-        '{"tool":"explain","text":"диск почти полон, чищу кеш docker"}',
-        '{"tool":"node_cmd","node":"gpu","argv":["docker","system","prune","-f"],"why":"освободить место"}',
-        '{"tool":"done","summary":"диск очищен"}',
+def test_full_loop_observe_act_done(env, monkeypatch):
+    _autonomy(config.AUTONOMY_SAFE_REPAIR)
+    monkeypatch.setattr(agent_exec.config, "RESTART_ALLOWLIST", {"api"})
+    client = _FakeClient([
+        _turn(("1", "observe", {"argv": ["kubectl", "get", "pods"], "target": "cluster"})),
+        _turn(("2", "act", {"argv": ["kubectl", "rollout", "restart", "deploy/api"],
+                            "target": "cluster", "why": "перезапуск"})),
+        _turn(("3", "done", {"summary": "перезапустил api"})),
     ])
-    res = agent_exec.run("почисти диск на gpu-узле", operator="op",
-                         llm_complete=model, http_post=fake)
-    _eq("цикл с моделью", res["model"], True)
+    res = agent_exec.run("почини api", "op1", client=client)
     kinds = [s["step"] for s in res["steps"]]
-    assert "observe" in kinds and "explain" in kinds and "done" in kinds, kinds
-    # node_cmd prune это safe_write, в auto исполнился через node-agent.
-    node_steps = [s for s in res["steps"] if s["step"] == "node_cmd"]
-    _eq("один узловой шаг", len(node_steps), 1)
-    _eq("узловой safe_write исполнен", node_steps[0]["outcome"], "executed")
-    print("полный цикл с моделью: ok")
+    assert kinds == ["observe", "act", "done"]
+    assert res["steps"][0]["outcome"] == "executed"
+    assert res["steps"][1]["outcome"] == "executed"
+    assert res["summary"] == "перезапустил api"
+    # Чтение и мутация записаны в аудит.
+    assert len(env["read"]) == 1
+    assert len(env["write"]) == 1
 
 
-def test_mode_get_set():
-    """get_mode и set_mode переключают режим и переживают чтение файла; мусор отклоняется."""
-    _fresh_mode("auto")
-    _eq("по умолчанию auto", agent_exec.get_mode(), "auto")
-    _eq("переключение в manual", agent_exec.set_mode("manual"), "manual")
-    _eq("прочитан manual", agent_exec.get_mode(), "manual")
-    _eq("мусор не меняет режим", agent_exec.set_mode("garbage"), "manual")
-    print("режимы get/set: ok")
+def test_observe_labeled_mutation_is_gated(env, monkeypatch):
+    # Модель назвала observe, но команда мутирующая: шаг обязан пройти гейт, не исполниться как чтение.
+    _autonomy(config.AUTONOMY_SAFE_REPAIR)
+    client = _FakeClient([
+        _turn(("1", "observe", {"argv": ["kubectl", "delete", "ns", "prod"], "target": "cluster"})),
+    ])
+    res = agent_exec.run("сделай", "op1", client=client)
+    step = res["steps"][0]
+    assert step["outcome"] == "pending_confirm"  # destructive -> подтверждение, а не чтение
+    assert step["class"] == policy.DESTRUCTIVE
+
+
+# --- Ветки гейта --------------------------------------------------------------------------------
+
+def test_destructive_stops_for_confirmation(env):
+    _autonomy(config.AUTONOMY_FULL)
+    client = _FakeClient([
+        _turn(("1", "act", {"argv": ["kubectl", "delete", "pvc", "data-0"], "target": "cluster",
+                            "why": "чистка"})),
+        _turn(("2", "done", {"summary": "не должно дойти"})),
+    ])
+    res = agent_exec.run("удали том", "op1", client=client)
+    # Ход остановлен на подтверждении: done из второго хода не выполняется.
+    assert len(res["steps"]) == 1
+    step = res["steps"][0]
+    assert step["outcome"] == "pending_confirm"
+    assert step["confirm_token"]
+    assert len(env["pending"]) == 1  # постановка в подтверждение аудирована
+
+
+def test_observe_level_proposes_only(env):
+    _autonomy(config.AUTONOMY_OBSERVE)
+    client = _FakeClient([
+        _turn(("1", "act", {"argv": ["kubectl", "rollout", "restart", "deploy/api"],
+                            "target": "cluster", "why": "перезапуск"})),
+        _turn(("2", "done", {"summary": "предложил перезапуск"})),
+    ])
+    res = agent_exec.run("перезапусти", "op1", client=client)
+    assert res["steps"][0]["outcome"] == "proposed"
+    assert res["steps"][1]["step"] == "done"
+    # Ничего не исполнено, мутаций в аудите нет.
+    assert len(env["write"]) == 0
+
+
+def test_restart_denylist_forces_confirm(env, monkeypatch):
+    _autonomy(config.AUTONOMY_FULL)
+    monkeypatch.setattr(agent_exec.config, "RESTART_ALLOWLIST", {"postgres"})  # даже если в allowlist
+    client = _FakeClient([
+        _turn(("1", "act", {"argv": ["kubectl", "rollout", "restart", "statefulset/postgres"],
+                            "target": "cluster", "why": "перезапуск"})),
+    ])
+    res = agent_exec.run("перезапусти postgres", "op1", client=client)
+    # postgres в denylist по умолчанию: подтверждение обязательно.
+    assert res["steps"][0]["outcome"] == "pending_confirm"
+
+
+def test_restart_outside_allowlist_forces_confirm(env, monkeypatch):
+    _autonomy(config.AUTONOMY_SAFE_REPAIR)
+    monkeypatch.setattr(agent_exec.config, "RESTART_ALLOWLIST", set())  # пусто = автоперезапуск выключен
+    client = _FakeClient([
+        _turn(("1", "act", {"argv": ["kubectl", "rollout", "restart", "deploy/api"],
+                            "target": "cluster", "why": "перезапуск"})),
+    ])
+    res = agent_exec.run("перезапусти api", "op1", client=client)
+    assert res["steps"][0]["outcome"] == "pending_confirm"
+
+
+# --- Гарды --------------------------------------------------------------------------------------
+
+def test_guard_blocks_mutation(env, monkeypatch):
+    _autonomy(config.AUTONOMY_SAFE_REPAIR)
+    monkeypatch.setattr(agent_exec.config, "RESTART_ALLOWLIST", {"api"})
+    monkeypatch.setattr(agent_exec.guards, "check", lambda *a, **k: (False, "исчерпан бюджет"))
+    client = _FakeClient([
+        _turn(("1", "act", {"argv": ["kubectl", "rollout", "restart", "deploy/api"],
+                            "target": "cluster", "why": "перезапуск"})),
+    ])
+    res = agent_exec.run("перезапусти", "op1", client=client)
+    assert res["steps"][0]["outcome"] == "blocked"
+    assert "бюджет" in res["steps"][0]["result"]["error"]
+
+
+# --- Подтверждение отложенного ------------------------------------------------------------------
+
+def test_confirm_executes_pending(env):
+    _autonomy(config.AUTONOMY_FULL)
+    client = _FakeClient([
+        _turn(("1", "act", {"argv": ["kubectl", "delete", "pvc", "data-0"], "target": "cluster",
+                            "why": "чистка"})),
+    ])
+    res = agent_exec.run("удали том", "op1", client=client)
+    token = res["steps"][0]["confirm_token"]
+    # Чужой оператор не может подтвердить.
+    other = agent_exec.confirm(token, "op2")
+    assert other["ok"] is False
+    # Инициатор подтверждает и исполняет.
+    ok = agent_exec.confirm(token, "op1")
+    assert ok["ok"] is True
+    # Повторный токен уже недействителен.
+    again = agent_exec.confirm(token, "op1")
+    assert again["ok"] is False
+
+
+def test_pending_expiry(env, monkeypatch):
+    _autonomy(config.AUTONOMY_FULL)
+    monkeypatch.setattr(agent_exec, "PENDING_TTL_SECONDS", -1)  # истекает мгновенно
+    client = _FakeClient([
+        _turn(("1", "act", {"argv": ["kubectl", "delete", "ns", "prod"], "target": "cluster",
+                            "why": "снос"})),
+    ])
+    res = agent_exec.run("снеси", "op1", client=client)
+    token = res["steps"][0]["confirm_token"]
+    assert agent_exec.confirm(token, "op1")["ok"] is False  # уже истёк
+
+
+# --- Фолбэк без модели --------------------------------------------------------------------------
+
+def test_single_command_fallback(env):
+    _autonomy(config.AUTONOMY_SAFE_REPAIR)
+    res = agent_exec.run("kubectl get pods", "op1", client=None)
+    # Без клиента модели: одна команда. get pods это чтение, но в _run_single идёт как act;
+    # классификатор всё равно относит к read, поэтому исполняется как безопасное.
+    assert len(res["steps"]) == 1
+
+
+def test_single_command_node_prefix(env):
+    _autonomy(config.AUTONOMY_SAFE_REPAIR)
+    res = agent_exec.run("node:w-1 df -h /", "op1", client=None)
+    step = res["steps"][0]
+    assert step["node"] == "w-1"
+    assert step["step"] in ("observe", "node_cmd")
+
+
+# --- Уровень автономии и сводка -----------------------------------------------------------------
+
+def test_set_mode_persists_and_legacy(env):
+    assert agent_exec.set_mode("full") == "full"
+    assert agent_exec.effective_autonomy() == "full"
+    assert agent_exec.set_mode("manual") == "observe"  # старое имя
+    assert agent_exec.effective_autonomy() == "observe"
+    assert agent_exec.set_mode("чепуха") == "observe"  # мусор не меняет
+
+
+def test_state_summary(env, monkeypatch):
+    monkeypatch.setattr(agent_exec.guards, "observe_only", lambda: False)
+    monkeypatch.setattr(agent_exec.guards, "state_summary", lambda: {"budget_left": 6})
+    _autonomy(config.AUTONOMY_SAFE_REPAIR)
+    s = agent_exec.state_summary()
+    assert s["autonomy"] == "safe_repair"
+    assert "guards" in s and "pending" in s
+
+
+# --- Инструменты MCP -----------------------------------------------------------------------------
+
+import mcp_tools
+from mcp_tools import ServerCfg
+
+
+class _FakeCaller:
+    def __init__(self, cfg, tools, results=None):
+        self.cfg, self._tools, self._results = cfg, tools, results or {}
+
+    def list_tools(self):
+        return self._tools
+
+    def call_tool(self, raw_name, args):
+        return self._results.get(raw_name, "результат MCP")
+
+
+@pytest.fixture
+def mcp_env(env, monkeypatch):
+    """Реестр MCP с одним читающим сервером (obs) и одним потенциально мутирующим (mut)."""
+    tools = [{"name": "query", "description": "запрос", "input_schema": {"type": "object"}}]
+    factory = lambda cfg: _FakeCaller(cfg, tools)
+    reg = mcp_tools.build_registry(session_factory=factory, config=[
+        ServerCfg("obs", "http://obs/mcp", read_only=True),
+        ServerCfg("mut", "http://mut/mcp", read_only=False),
+    ])
+    monkeypatch.setattr(agent_exec, "_REGISTRY", reg)
+    return env
+
+
+def test_mcp_readonly_executes(mcp_env):
+    _autonomy(config.AUTONOMY_SAFE_REPAIR)
+    client = _FakeClient([
+        _turn(("1", "mcp__obs__query", {"q": "up"})),
+        _turn(("2", "done", {"summary": "посмотрел метрики"})),
+    ])
+    res = agent_exec.run("покажи метрики", "op1", client=client)
+    assert res["steps"][0]["outcome"] == "executed"
+    assert res["steps"][0]["result"]["text"] == "результат MCP"
+    assert len(mcp_env["read"]) == 1  # читающий инструмент MCP аудирован как чтение
+
+
+def test_mcp_mutating_requires_confirmation(mcp_env):
+    _autonomy(config.AUTONOMY_FULL)
+    client = _FakeClient([
+        _turn(("1", "mcp__mut__query", {"q": "apply"})),
+        _turn(("2", "done", {"summary": "не дойдёт"})),
+    ])
+    res = agent_exec.run("сделай через mcp", "op1", client=client)
+    assert len(res["steps"]) == 1
+    assert res["steps"][0]["outcome"] == "pending_confirm"
+    token = res["steps"][0]["confirm_token"]
+    # Подтверждение исполняет вызов MCP.
+    ok = agent_exec.confirm(token, "op1")
+    assert ok["ok"] is True
+
+
+def test_mcp_mutating_observe_only_proposes(mcp_env):
+    _autonomy(config.AUTONOMY_OBSERVE)
+    client = _FakeClient([
+        _turn(("1", "mcp__mut__query", {"q": "apply"})),
+        _turn(("2", "done", {"summary": "предложил"})),
+    ])
+    res = agent_exec.run("через mcp", "op1", client=client)
+    assert res["steps"][0]["outcome"] == "proposed"
+
+
+def test_build_tools_includes_mcp(mcp_env):
+    names = [t["name"] for t in agent_exec._build_tools()]
+    assert "observe" in names and "mcp__obs__query" in names and "mcp__mut__query" in names
 
 
 if __name__ == "__main__":
-    test_auto_executes_safe_write()
-    test_auto_defers_finance()
-    test_auto_defers_destructive()
-    test_manual_proposes_everything()
-    test_observe_not_in_budget()
-    test_observe_mutating_becomes_act()
-    test_guards_called_before_mutation()
-    test_fallback_no_model_single_command()
-    test_confirm_executes_pending()
-    test_full_loop_with_model()
-    test_mode_get_set()
-    print("ВСЕ ТЕСТЫ agent_exec ПРОЙДЕНЫ")
+    import sys
+    sys.exit(pytest.main([__file__, "-q"]))

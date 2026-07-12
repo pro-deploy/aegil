@@ -1,9 +1,15 @@
-"""Узкий доступ к Kubernetes для управления инфраструктурой из панели (ADR-0033, фаза 4).
-Только пространство имён krokki и только через сервисный аккаунт пода с минимальным RBAC
-(чтение деплойментов и их перезапуск). Перезапуск разрешён строго безсостоятельным сервисам
-из allowlist; хранилища и особые поды (postgres, redis, vllm, stalwart) в denylist и не
-перезапускаются из панели, потому что их рестарт вызывает простой или несовместим с одной
-репликой. Вне кластера (нет токена сервисного аккаунта) функции мягко деградируют.
+"""Узкий доступ к API Kubernetes для наблюдения и управления инфраструктурой из панели агента.
+
+Слой домен-агностичен и не содержит зашитых имён узлов, сервисов или синонимов: наблюдаемое и
+управляемое пространство имён, списки допустимых и запрещённых к перезапуску сервисов, а также
+метка роли узла для дружеских имён берутся из конфигурации продукта (модуль ``config`` с единым
+префиксом переменных окружения ``SENTINEL_``), топология же выясняется через сам API Kubernetes.
+Доступ идёт через сервисный аккаунт пода с минимальным разграничением прав (чтение подов, узлов,
+событий и деплойментов, перезапуск деплойментов и удаление подов). Перезапуск и удаление
+разрешены строго безсостоятельным сервисам из allowlist и запрещены сервисам из denylist,
+причём эта проверка выполняется до обращения к API. Вне кластера (при отсутствии токена
+сервисного аккаунта) функции мягко деградируют, возвращая признак недоступности вместо падения.
+Соглашения продукта описаны в ``docs/CONVENTIONS.md``.
 """
 from __future__ import annotations
 
@@ -31,6 +37,35 @@ _CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 ALLOWED = _config.RESTART_ALLOWLIST
 DENY = _config.RESTART_DENYLIST
 
+# Метка роли узла для дружеских имён. Берётся из конфига продукта (SENTINEL_NODE_ROLE_LABEL),
+# а не зашивается под конкретный кластер. Если метка на узлах не проставлена, агент оперирует
+# именами узлов как есть.
+NODE_ROLE_LABEL = _config.NODE_ROLE_LABEL
+
+# Явные таймауты на все обращения к API Kubernetes (в секундах). Без таймаута зависший или
+# недоступный API-сервер заморозил бы обработчик панели; с таймаутом отказ становится честной
+# ошибкой. Значение единое, чтобы поведение было предсказуемым, чтение более тяжёлых ответов
+# (логи, сводка kubelet) использует _READ_TIMEOUT.
+_API_TIMEOUT = 10.0
+_READ_TIMEOUT = 15.0
+
+
+def _senv(name: str, default: str = "") -> str:
+    """Значение переменной окружения продукта (префикс SENTINEL_) с обрезкой пробелов.
+
+    Используется только для параметров дискавери node-agent, не представленных в модуле config
+    (пространство имён, селектор меток и порт node-agent). Прочая конфигурация приходит из config,
+    а не читается из окружения напрямую. Единый префикс SENTINEL_ соблюдается для всей настройки."""
+    return os.getenv(name, default).strip()
+
+
+def _senv_int(name: str, default: int) -> int:
+    """Целочисленная переменная окружения продукта с устойчивостью к пустому и мусорному значению."""
+    try:
+        return int(_senv(name))
+    except ValueError:
+        return default
+
 
 def _incluster():
     """Возвращает (base_url, token, ca) при запуске в кластере, иначе None."""
@@ -46,7 +81,7 @@ def _incluster():
     return f"https://{host}:{port}", token, ca
 
 
-def _get_json(path: str, timeout: float = 10.0):
+def _get_json(path: str, timeout: float = _API_TIMEOUT):
     """Чтение произвольного пути API Kubernetes сервисным аккаунтом пода. Возвращает
     разобранный JSON либо None вне кластера или при ошибке (мягкая деградация: панель
     остаётся работоспособной, просто показывает, что данные недоступны)."""
@@ -64,7 +99,7 @@ def _get_json(path: str, timeout: float = 10.0):
 
 
 def list_pods():
-    """Список подов пространства krokki для наблюдения (ADR-0038, этап 2): фаза, узел,
+    """Список подов наблюдаемого пространства имён (config.NAMESPACE) для наблюдения: фаза, узел,
     рестарты, причины ожидания (CrashLoopBackOff, ImagePullBackOff), признак OOMKilled
     последнего завершения и время последнего рестарта. None вне кластера."""
     data = _get_json(f"/api/v1/namespaces/{NAMESPACE}/pods")
@@ -128,8 +163,8 @@ def list_nodes():
 
 
 def list_events(limit: int = 50):
-    """Свежие события пространства krokki (падения, выселения, нехватка ресурсов) для
-    приложения к диагнозу. None вне кластера."""
+    """Свежие события наблюдаемого пространства имён (config.NAMESPACE): падения, выселения,
+    нехватка ресурсов, для приложения к диагнозу. None вне кластера."""
     data = _get_json(f"/api/v1/namespaces/{NAMESPACE}/events?limit={int(limit)}")
     if data is None:
         return None
@@ -157,7 +192,7 @@ def pod_log_tail(pod: str, lines: int = 100):
         return None
     base, token, ca = c
     try:
-        with httpx.Client(verify=ca, timeout=15.0) as cl:
+        with httpx.Client(verify=ca, timeout=_READ_TIMEOUT) as cl:
             r = cl.get(f"{base}/api/v1/namespaces/{NAMESPACE}/pods/{pod}/log",
                        params={"tailLines": int(lines)},
                        headers={"Authorization": f"Bearer {token}"})
@@ -170,17 +205,19 @@ def pod_log_tail(pod: str, lines: int = 100):
 def node_stats_summary(node: str):
     """Сводка kubelet узла через прокси API-сервера (/api/v1/nodes/{node}/proxy/stats/summary):
     фактическое использование процессора, памяти и файловых систем по узлу и подам. Это
-    закрывает вопросы «где кончилось место» и «кто съел память» без Prometheus (ADR-0038).
+    закрывает вопросы «где кончилось место» и «кто съел память» без Prometheus.
     None вне кластера, при неверном имени узла или если kubelet узла недоступен (сам по
     себе диагностический признак)."""
     if not _NAME_RE.match(str(node or "")):
         return None
-    return _get_json(f"/api/v1/nodes/{node}/proxy/stats/summary", timeout=15.0)
+    return _get_json(f"/api/v1/nodes/{node}/proxy/stats/summary", timeout=_READ_TIMEOUT)
 
 
 def pod_service(pod_name: str) -> str:
-    """Имя сервиса по имени пода деплоймента: worker-6b9f7-x2x1c принадлежит worker
-    (отрезаются два хвостовых сегмента хэшей ReplicaSet и пода)."""
+    """Имя сервиса по имени пода деплоймента по стандартной схеме именования Kubernetes: у пода
+    вида «<сервис>-<хэш ReplicaSet>-<хэш пода>» отрезаются два хвостовых сегмента, поэтому,
+    например, «svc-6b9f7-x2x1c» приводится к «svc». Схема универсальна и не привязана ни к
+    какому конкретному сервису."""
     parts = str(pod_name or "").split("-")
     if len(parts) >= 3:
         return "-".join(parts[:-2])
@@ -188,10 +225,11 @@ def pod_service(pod_name: str) -> str:
 
 
 def delete_pod(pod: str):
-    """Удаляет конкретный под (плейбук A4, действие a3 уровня A): контроллер пересоздаст
-    его сам. Возвращает (ok, detail) как rollout_restart. Та же дисциплина, что и у
-    перезапуска: имя проверяется по DNS-1123, а сервис-владелец пода обязан быть в
-    allowlist и не в denylist, причём проверка идёт ДО обращения к API."""
+    """Удаляет конкретный под: контроллер (ReplicaSet, Deployment, DaemonSet или StatefulSet)
+    пересоздаёт его сам, поэтому удаление пода это обратимая ремонтная операция. Возвращает
+    (ok, detail) с той же семантикой, что и rollout_restart. Дисциплина та же, что при перезапуске:
+    имя проверяется по DNS-1123, а сервис-владелец пода обязан быть в allowlist и не в denylist,
+    причём проверка выполняется до обращения к API."""
     if not _NAME_RE.match(str(pod or "")):
         return False, "недопустимое имя пода"
     svc = pod_service(pod)
@@ -204,7 +242,7 @@ def delete_pod(pod: str):
         return None, "вне кластера: нет доступа к API Kubernetes"
     base, token, ca = c
     try:
-        with httpx.Client(verify=ca, timeout=15.0) as cl:
+        with httpx.Client(verify=ca, timeout=_READ_TIMEOUT) as cl:
             r = cl.delete(f"{base}/api/v1/namespaces/{NAMESPACE}/pods/{pod}",
                           headers={"Authorization": f"Bearer {token}"})
     except Exception as e:
@@ -215,16 +253,21 @@ def delete_pod(pod: str):
 
 
 def list_deployments():
-    """Список деплойментов пространства krokki со статусом реплик. None вне кластера."""
+    """Список деплойментов наблюдаемого пространства имён (config.NAMESPACE) со статусом реплик.
+    None вне кластера, а также при недоступности или таймауте API Kubernetes (мягкая деградация,
+    единообразно с прочими читающими функциями: панель показывает отсутствие данных, а не падает)."""
     c = _incluster()
     if c is None:
         return None
     base, token, ca = c
-    with httpx.Client(verify=ca, timeout=10.0) as cl:
-        r = cl.get(f"{base}/apis/apps/v1/namespaces/{NAMESPACE}/deployments",
-                   headers={"Authorization": f"Bearer {token}"})
-        r.raise_for_status()
-        data = r.json()
+    try:
+        with httpx.Client(verify=ca, timeout=_API_TIMEOUT) as cl:
+            r = cl.get(f"{base}/apis/apps/v1/namespaces/{NAMESPACE}/deployments",
+                       headers={"Authorization": f"Bearer {token}"})
+            r.raise_for_status()
+            data = r.json()
+    except Exception:
+        return None
     out = []
     for d in data.get("items", []):
         name = d.get("metadata", {}).get("name", "")
@@ -240,24 +283,21 @@ def list_deployments():
     return out
 
 
-# Дружеские синонимы узлов, чтобы оператор говорил по-человечески («на управляющем», «на gpu»,
-# «на gooseek»), а не точным именем узла Kubernetes. Синоним сопоставляется с ролью узла
-# (метка krokki.io/role), а роль с реальным именем узла. Так путь одинаково работает и с
-# управляющим узлом, где живёт основное приложение, и с домашним GPU-узлом.
-_NODE_ROLE_ALIASES = {
-    "control": {"control", "controlplane", "control-plane", "управляющий", "управляющем",
-                "мастер", "master", "cloud", "облако", "облачный", "api", "control-node"},
-    "gpu": {"gpu", "гпу", "видеокарта", "домашний", "home", "ml", "инференс", "gooseek",
-            "gooseek-serv", "гусик"},
-}
-
-
 def resolve_node(name: str) -> str | None:
-    """Приводит дружеское имя узла к реальному имени узла Kubernetes. Точное имя возвращается как
-    есть; синоним роли (control, gpu и т. п.) резолвится по метке krokki.io/role; иначе пробуется
-    совпадение по подстроке имени (например «gooseek» совпадает с «gooseek-serv»). Возвращает None,
-    если узел не найден или нет доступа к кластеру. Так агент понимает и «на управляющем», и точное
-    «msk-1-vm-94q6», и «на gooseek»."""
+    """Приводит дружеское имя узла к реальному имени узла Kubernetes, оставаясь домен-агностичным:
+    зашитых имён узлов и зашитых синонимов в продукте нет, топология выясняется через API
+    Kubernetes, а дружеские имена берутся из метки роли (config.NODE_ROLE_LABEL), если она
+    проставлена на узлах.
+
+    Разрешение идёт в три шага. Сначала проверяется точное имя узла: если переданная строка
+    совпадает с именем существующего узла, она возвращается как есть. Затем, если на каком-либо
+    узле проставлена метка роли config.NODE_ROLE_LABEL и её значение без учёта регистра совпадает с
+    переданной строкой, возвращается имя этого узла (так работает «дружеское» имя, заданное
+    владельцем кластера через метку роли). Наконец, пробуется совпадение по подстроке между
+    переданной строкой и именем узла в обе стороны, что помогает распознать сокращённую форму
+    имени. Возвращает None, если узел не найден. Вне кластера, когда список узлов недоступен,
+    строка возвращается как есть при условии, что она является допустимым именем ресурса по
+    DNS-1123, иначе None."""
     raw = str(name or "").strip()
     if not raw:
         return None
@@ -271,13 +311,16 @@ def resolve_node(name: str) -> str | None:
     if raw in names:
         return raw
     low = raw.lower()
-    # 2. Синоним роли.
-    for role, aliases in _NODE_ROLE_ALIASES.items():
-        if low in aliases:
-            for n in nodes:
-                if (n.get("metadata", {}).get("labels", {}) or {}).get("krokki.io/role") == role:
-                    return n.get("metadata", {}).get("name")
-    # 3. Совпадение по подстроке имени узла.
+    # 2. Дружеское имя из метки роли, заданной владельцем кластера (config.NODE_ROLE_LABEL).
+    #    Никаких зашитых синонимов: сопоставляется только фактическое значение метки на узле.
+    for n in nodes:
+        labels = (n.get("metadata", {}) or {}).get("labels", {}) or {}
+        role = labels.get(NODE_ROLE_LABEL)
+        if role and str(role).lower() == low:
+            nm = (n.get("metadata", {}) or {}).get("name")
+            if nm:
+                return nm
+    # 3. Совпадение по подстроке имени узла (сокращённая форма реального имени).
     for nm in names:
         if nm and (low in nm.lower() or nm.lower() in low):
             return nm
@@ -288,18 +331,20 @@ def get_node_agent_endpoint(node: str):
     """Возвращает базовый адрес пода node-agent, работающего на указанном узле, вида
     «http://<podIP>:9110», либо None вне кластера или если под node-agent на узле не найден.
 
-    node-agent это привилегированный DaemonSet (ADR-0041, раздел 2): по одному поду на узел,
-    слушает порт 9110 только внутрикластерно. Панель адресует под нужного узла по его podIP из
-    Kubernetes API, поэтому команда исполняется именно на том хосте, который выбрал агент.
-    Дискавери идёт по меткам DaemonSet (app=node-agent) в пространстве krokki с фильтром по
-    имени узла (spec.nodeName). Дружеское имя узла сначала приводится к реальному через
-    resolve_node. Имя узла валидируется по DNS-1123 до подстановки в путь API."""
+    node-agent это привилегированный DaemonSet: по одному поду на узел, слушает свой порт только
+    внутрикластерно. Панель адресует под нужного узла по его podIP из API Kubernetes, поэтому
+    команда исполняется именно на том хосте, который выбрал агент. Дискавери идёт по метке
+    DaemonSet в наблюдаемом пространстве имён (config.NAMESPACE) с фильтром по имени узла
+    (spec.nodeName). Параметры дискавери (пространство имён, селектор меток, порт) настраиваются
+    переменными окружения продукта с префиксом SENTINEL_ и имеют нейтральные значения по умолчанию.
+    Дружеское имя узла сначала приводится к реальному через resolve_node. Имя узла валидируется по
+    DNS-1123 до подстановки в путь API."""
     node = resolve_node(node) or node
     if not _NAME_RE.match(str(node or "")):
         return None
-    ns = os.getenv("NODE_AGENT_NAMESPACE", NAMESPACE)
-    selector = os.getenv("NODE_AGENT_SELECTOR", "app=node-agent")
-    port = int(os.getenv("NODE_AGENT_PORT", "9110"))
+    ns = _senv("SENTINEL_NODEAGENT_NAMESPACE") or NAMESPACE
+    selector = _senv("SENTINEL_NODEAGENT_SELECTOR") or "app=node-agent"
+    port = _senv_int("SENTINEL_NODEAGENT_PORT", 9110)
     data = _get_json(f"/api/v1/namespaces/{ns}/pods?labelSelector={selector}")
     if data is None:
         return None
@@ -328,11 +373,14 @@ def rollout_restart(name: str, now_iso: str):
     base, token, ca = c
     patch = {"spec": {"template": {"metadata": {"annotations": {
         "kubectl.kubernetes.io/restartedAt": now_iso}}}}}
-    with httpx.Client(verify=ca, timeout=15.0) as cl:
-        r = cl.patch(f"{base}/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{name}",
-                     headers={"Authorization": f"Bearer {token}",
-                              "Content-Type": "application/strategic-merge-patch+json"},
-                     content=json.dumps(patch))
+    try:
+        with httpx.Client(verify=ca, timeout=_READ_TIMEOUT) as cl:
+            r = cl.patch(f"{base}/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{name}",
+                         headers={"Authorization": f"Bearer {token}",
+                                  "Content-Type": "application/strategic-merge-patch+json"},
+                         content=json.dumps(patch))
+    except Exception as e:
+        return False, f"ошибка вызова API Kubernetes: {e}"
     if r.status_code in (200, 201):
         return True, "перезапуск инициирован"
     return False, f"API Kubernetes вернул {r.status_code}"

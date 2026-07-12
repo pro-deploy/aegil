@@ -1,628 +1,724 @@
-"""Агентный исполнитель команд девопса: цикл использования инструментов языковой моделью
-(ADR-0041, спецификация разделы 3, 4, 5, 6, 8).
+"""Агентный исполнитель команд эксплуатации: цикл использования инструментов языковой моделью.
 
-Модель (Gemma через _llm_complete из commands.py) на каждом шаге возвращает СТРОГО один JSON
-вызова инструмента. Схема проверяется кодом (как в solve.py), при мусоре фолбэк. Инструменты:
+Оператор пишет запрос на естественном языке, модель ведёт многошаговый диалог через клиента с
+вызовом инструментов (llm.py): на каждом шаге она наблюдает состояние, рассуждает, действует и
+проверяет результат. Инструменты, доступные модели:
 
-  observe {argv, target}       чтение состояния. Классификатор ОБЯЗАН подтвердить read, иначе
-                               шаг трактуется как act. В бюджет гардов не считается.
-  act {argv, target, why}      мутация в кластере или локально. Классифицируется policy.py.
-  node_cmd {node, argv, why}   мутация или чтение на конкретном узле через node-agent.
-  explain {text}               промежуточное объяснение оператору по-русски.
-  done {summary}               завершить задачу с итогом.
+  observe {argv, target, node}       чтение состояния кластера или узла. Классификатор обязан
+                                     подтвердить, что команда действительно только читает; иначе
+                                     шаг трактуется как мутация и проходит гейт автономии.
+  act {argv, target, node, why}      мутация в кластере или на узле.
+  explain {text}                     промежуточное объяснение оператору.
+  done {summary}                     завершить задачу с итогом.
 
-Политика исполнения (раздел 4):
-  auto-режим:    read и safe_write исполняются сразу; finance и destructive уходят в отложенное
-                 подтверждение (PENDING-токен), НЕ исполняются автономно.
-  manual-режим:  любая мутация (safe_write, finance, destructive) возвращается оператору как
-                 предложение; observe агент делает сам, чтобы собрать данные.
+Ключевое свойство продукта: класс опасности каждой команды и решение о том, исполнять ли её
+автономно, определяет ДЕТЕРМИНИРОВАННЫЙ гейт вне модели (policy.gate по уровню автономии из
+config.autonomy()), поэтому модель физически не может обойти подтверждение необратимого. Уровни:
 
-Гарды (guards.py) вызываются ПЕРЕД каждым исполнением мутации: бюджет часа, кулдаун, предохранитель,
-осцилляция. Каждое исполнение пишется в audit.py (actor=agent или actor=<оператор>).
+  observe      сухой прогон: любая мутация становится предложением оператору, ничего не исполняется.
+  safe_repair  read и safe_write исполняются автономно; destructive и защищённое за подтверждением.
+  full         автономно всё, кроме destructive и защищённого, которые подтверждаются всегда.
 
-Мягкая деградация: нет node-agent или токена даёт честную ошибку шага, не падение. Без модели
-(_llm_complete недоступен) agent_exec работает как исполнитель ОДНОЙ команды оператора без
-планирования: одна инструкция классифицируется и исполняется либо предлагается.
+Дополнительный слой безопасности продукта: перезапуск сервиса из denylist (хранилища) и, при
+непустом allowlist, перезапуск сервиса вне его требуют подтверждения независимо от уровня.
+
+Гарды (guards.py) вызываются ПЕРЕД каждым автономным исполнением мутации: попытка резервируется
+атомарно (record_attempt) до исполнения, что закрывает гонку проверки и фиксации. Каждое чтение и
+каждая мутация пишутся в аудит (audit.py). Отложенные destructive и защищённые команды хранятся
+персистентно (переживают перезапуск), привязаны к инициировавшему оператору и имеют срок жизни.
+
+Топология НЕ зашита: перед диалогом агент снимает актуальный список узлов через API кластера и
+передаёт его модели как факт на входе. Без ключа модели (llm.is_configured() ложно) исполнитель
+работает как обработчик ОДНОЙ команды оператора: инструкция классифицируется и исполняется либо
+предлагается, без планирования.
 """
 from __future__ import annotations
 
 import json
 import os
-import re
 import secrets
 import shlex
+import threading
 import time
 from pathlib import Path
 
 import httpx
 
+import audit
+import config
 import guards
 import k8s
+import llm
+import mcp_tools
 import policy
-from audit import audit_write
+import slo
 
-# Предел шагов агентного цикла (наблюдение не считается в бюджет гардов, но общий предел шагов
-# защищает от бесконечного планирования модели).
-AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "12"))
+# Предел шагов агентного цикла: защита от бесконечного планирования модели.
+AGENT_MAX_STEPS = int(os.getenv("SENTINEL_AGENT_MAX_STEPS", "12"))
+# Ограничение вывода команды в трейсе и в результате инструмента, чтобы длинные логи не раздували
+# ни ответ панели, ни контекст модели.
+_OUTPUT_LIMIT = int(os.getenv("SENTINEL_AGENT_OUTPUT_LIMIT", "6000"))
+# Таймаут узловой команды через node-agent.
+_NODE_TIMEOUT = config.NODEAGENT_TIMEOUT
+# Срок жизни отложенного подтверждения.
+PENDING_TTL_SECONDS = int(os.getenv("SENTINEL_AGENT_PENDING_TTL_SECONDS", "300"))
 
-# Токен доступа к node-agent (общий секрет, заголовок X-NodeAgent-Token). Пусто означает, что
-# узловые команды недоступны и дают честную ошибку шага, а не падение.
-NODEAGENT_TOKEN = os.getenv("NODEAGENT_TOKEN", "")
-NODEAGENT_TIMEOUT = int(os.getenv("NODEAGENT_TIMEOUT", "30"))
+# Каталог состояния вне рабочего дерева (тот же, что у гардов и аудита), чтобы агент не мог стереть
+# собственные отложенные подтверждения как safe_write.
+_STATE_DIR = os.getenv("SENTINEL_STATE_DIR", "/data")
+_PENDING_PATH = Path(os.getenv("SENTINEL_AGENT_PENDING", str(Path(_STATE_DIR) / "agent-pending.json")))
+_AUTONOMY_PATH = Path(os.getenv("SENTINEL_AGENT_AUTONOMY", str(Path(_STATE_DIR) / "agent-autonomy")))
 
-# Ограничение вывода команды в трейсе шага, чтобы длинные логи не раздували ответ панели.
-_OUTPUT_LIMIT = int(os.getenv("AGENT_OUTPUT_LIMIT", "8000"))
+_LOCK = threading.RLock()
 
-# Время жизни и хранилище отложенных finance и destructive команд (PENDING-механизм с
-# одноразовым токеном и TTL, по образцу commands.PENDING).
-PENDING_TTL_SECONDS = int(os.getenv("AGENT_PENDING_TTL_SECONDS", "300"))
-PENDING: dict = {}
+# Потоколокальный контекст надёжности: доля ошибок текущего разбираемого инцидента. Ставится
+# на время investigate из вердикта RCA и используется гейтом автономии, чтобы автономный ремонт
+# запускался при прожигании бюджета ошибок, а не от одной уверенности модели. Вне разбора
+# инцидента (например, одиночная команда оператора) контекст пуст и SLO-гейт не применяется.
+_slo_ctx = threading.local()
 
-# Персистентный флаг режима работы агента: auto (по умолчанию) или manual. Хранится простым
-# файлом рядом с журналом инцидентов, чтобы режим переживал перезапуск панели.
-_MODE_PATH = Path(os.getenv("ADMINCHAT_AGENT_MODE",
-                            str(Path(__file__).parent / "agent-mode.txt")))
-_VALID_MODES = ("auto", "manual")
+_VALID_LEVELS = (config.AUTONOMY_OBSERVE, config.AUTONOMY_SAFE_REPAIR, config.AUTONOMY_FULL)
+# Совместимость со старыми названиями режима панели.
+_LEGACY_MODE = {"auto": config.AUTONOMY_SAFE_REPAIR, "manual": config.AUTONOMY_OBSERVE}
+
+# Реестр инструментов открытых серверов MCP (наблюдаемость и прочее). Строится лениво из
+# конфигурации; при отсутствии серверов пуст, и агент работает только со встроенными инструментами.
+_REGISTRY: mcp_tools.MCPRegistry | None = None
+
+
+def _mcp_registry() -> mcp_tools.MCPRegistry:
+    global _REGISTRY
+    if _REGISTRY is None:
+        try:
+            _REGISTRY = mcp_tools.build_registry()
+        except Exception as e:  # noqa: BLE001 недоступность MCP не должна ронять панель
+            print(f"agent_exec: реестр MCP не построен: {e}", flush=True)
+            _REGISTRY = mcp_tools.MCPRegistry()
+    return _REGISTRY
+
+
+def _build_tools() -> list[dict]:
+    """Встроенные инструменты плюс инструменты подключённых серверов MCP."""
+    return _TOOLS + _mcp_registry().schemas()
+
+
+# ---------------------------------------------------------------------------
+# Уровень автономии (с горячим переопределением из интерфейса).
+# ---------------------------------------------------------------------------
+
+def effective_autonomy() -> str:
+    """Действующий уровень автономии: переопределение из интерфейса (файл состояния) имеет приоритет
+    над значением окружения config.autonomy(). При отсутствии или порче файла берётся окружение."""
+    try:
+        val = _AUTONOMY_PATH.read_text(encoding="utf-8").strip()
+        if val in _VALID_LEVELS:
+            return val
+    except OSError:
+        pass
+    return config.autonomy()
+
+
+def set_mode(level: str) -> str:
+    """Переключает уровень автономии из интерфейса и персистентно его сохраняет. Принимает канонные
+    уровни (observe, safe_repair, full) и старые названия (auto, manual). Недопустимое значение
+    отклоняется мягко: остаётся прежний уровень."""
+    val = str(level or "").strip().lower()
+    val = _LEGACY_MODE.get(val, val)
+    if val not in _VALID_LEVELS:
+        return effective_autonomy()
+    try:
+        _AUTONOMY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _AUTONOMY_PATH.write_text(val, encoding="utf-8")
+    except OSError:
+        pass
+    return val
 
 
 def get_mode() -> str:
-    """Текущий режим агента (auto или manual). При отсутствии или порче файла возвращает auto."""
+    return effective_autonomy()
+
+
+# ---------------------------------------------------------------------------
+# Отложенные подтверждения (персистентные, привязаны к оператору, с TTL).
+# ---------------------------------------------------------------------------
+
+def _pending_load() -> dict:
     try:
-        val = _MODE_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        return "auto"
-    return val if val in _VALID_MODES else "auto"
+        return json.loads(_PENDING_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
-def set_mode(mode: str) -> str:
-    """Переключает режим агента. Возвращает установленный режим. Недопустимое значение
-    отклоняется мягко (остаётся прежний режим)."""
-    mode = str(mode or "").strip().lower()
-    if mode not in _VALID_MODES:
-        return get_mode()
+def _pending_save(data: dict) -> None:
     try:
-        _MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _MODE_PATH.write_text(mode, encoding="utf-8")
-    except OSError:
-        pass
-    return mode
+        _PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PENDING_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, _PENDING_PATH)
+    except OSError as e:
+        print(f"agent_exec: не удалось сохранить отложенное подтверждение: {e}", flush=True)
+
+
+def _pending_prune(data: dict, now: float) -> dict:
+    return {tok: p for tok, p in data.items() if p.get("expires", 0) > now}
+
+
+def _stage_pending(argv, target, node, why, cls, operator) -> tuple[str, str]:
+    """Ставит мутирующую команду в отложенное подтверждение и возвращает (token, message)."""
+    now = time.time()
+    token = secrets.token_urlsafe(16)
+    with _LOCK:
+        data = _pending_prune(_pending_load(), now)
+        data[token] = {"argv": list(argv), "target": target, "node": node, "why": why,
+                       "class": cls, "operator": operator, "created": now,
+                       "expires": now + PENDING_TTL_SECONDS}
+        _pending_save(data)
+    audit.audit_pending(operator, "agent.stage", {"target": target, "node": node, "why": why},
+                        node or target, cls, argv=list(argv))
+    human = policy.describe(cls)
+    msg = (f"Требуется подтверждение оператора: {human}. Команда: {' '.join(argv)}"
+           + (f" на узле {node}" if node else "") + ".")
+    return token, msg
+
+
+def confirm(token: str, operator: str) -> dict:
+    """Подтверждает и исполняет ранее отложенную команду по одноразовому токену. Токен привязан к
+    инициировавшему оператору: подтвердить может только он. Исполнение идёт через гарды и аудит с
+    отметкой confirmed=True."""
+    now = time.time()
+    with _LOCK:
+        data = _pending_prune(_pending_load(), now)
+        p = data.get(token)
+        if not p:
+            _pending_save(data)  # сохраняем результат чистки просроченных
+            return {"ok": False, "message": "Токен не найден или истёк. Повторите запрос."}
+        if p.get("operator") and p["operator"] != operator:
+            # Токен НЕ расходуется: инициатор ещё сможет подтвердить.
+            return {"ok": False, "message": "Подтвердить может только инициировавший оператор."}
+        data.pop(token, None)
+        _pending_save(data)
+    if p.get("kind") == "mcp":
+        return _confirm_mcp(p, operator)
+    argv, target, node = p["argv"], p.get("target", "cluster"), p.get("node")
+    res = _execute_mutation(argv, target, node, operator, confirmed=True)
+    ok = _result_ok(res)
+    out = _result_text(res)
+    return {"ok": ok, "message": ("Исполнено." if ok else "Не удалось исполнить.") + (f" {out}" if out else ""),
+            "result": res}
 
 
 # ---------------------------------------------------------------------------
-# Системная инструкция и схема инструментов для модели.
+# Исполнение команд: узловой агент и кластер.
 # ---------------------------------------------------------------------------
 
-SYSTEM = (
-    "Ты автономный девопс-агент платформы KROKKI за терминалом кластера. Тебе дана инструкция "
-    "оператора и, при наличии, результаты прошлых шагов. На КАЖДОМ шаге верни СТРОГО один "
-    "JSON-объект вызова ОДНОГО инструмента, без текста вокруг. Инструменты:\n"
-    '{"tool":"observe","argv":["kubectl","get","pods"],"target":"cluster"}: чтение состояния '
-    "(kubectl get/describe/logs/top, df, du, docker ps, crictl images, ps, free, uptime, cat "
-    "/proc). target это cluster|control|gpu.\n"
-    '{"tool":"act","argv":["kubectl","rollout","restart","deployment/asr"],"target":"cluster",'
-    '"why":"по-русски зачем"}: мутирующая команда (rollout restart, delete pod, prune, rm кеша, '
-    "kill, systemctl restart).\n"
-    '{"tool":"node_cmd","node":"gpu","argv":["df","-h","/"],"why":"по-русски зачем"}: команда на '
-    "конкретном узле через node-agent.\n"
-    '{"tool":"explain","text":"по-русски промежуточное объяснение"}: рассуждение оператору.\n'
-    '{"tool":"done","summary":"по-русски итог"}: завершить задачу.\n'
-    "Сначала наблюдай (observe), рассуждай (explain), потом действуй (act или node_cmd), затем "
-    "проверяй результат наблюдением и заверши done. Опасное (удаление данных, деньги тенанта) "
-    "предлагай командой, система сама спросит подтверждение.\n"
-    "ТОПОЛОГИЯ. В кластере два узла: управляющий (node=control, на нём api, web, базы, панель) и "
-    "домашний GPU-узел gooseek (node=gpu, на нём ML: asr, llm, diarize). Слова «gooseek», «гусик», "
-    "«gpu», «видеокарта» это ОДИН И ТОТ ЖЕ узел node=gpu, а не под и не сервис: не ищи его среди "
-    "подов. Вопросы про диск, процессор, память, файлы, docker и containerd УЗЛА решай через "
-    "node_cmd с node=control или node=gpu. Вопросы про поды, деплойменты, очередь заданий, тенантов "
-    "решай через observe и act в кластере.\n"
-    "Правила: argv это список отдельных аргументов, НЕ склеивай несколько команд в один argv и НЕ "
-    "клади пробелы внутрь одного аргумента (пиши [\"du\",\"-sh\",\"--max-depth=1\",\"/\"], а не "
-    "[\"du\",\"-sh\",\"/ --max-depth=1\"]). Каждый предыдущий шаг возвращает тебе фактический вывод "
-    "(stdout, код возврата): опирайся на него, не выдумывай. Не повторяй одну и ту же команду, если "
-    "она уже дала результат. Узлы работают на k3s (containerd), докера для рантайма нет. Для "
-    "чистки диска узла корректные команды: осмотр [\"df\",\"-h\",\"/\"] и вглубь "
-    "[\"du\",\"-xh\",\"--max-depth=1\",\"/var/lib\"]; РЕАЛЬНОЕ хранилище образов k3s чистится "
-    "через [\"k3s\",\"crictl\",\"rmi\",\"--prune\"] (обычный crictl бьёт в другой, почти пустой "
-    "containerd, толку мало); эфемерные данные подов ищи в "
-    "[\"du\",\"-xh\",\"--max-depth=2\",\"/var/lib/kubelet/pods\"] с сортировкой, а крупные каталоги "
-    "в [\"du\",\"-xh\",\"--max-depth=2\",\"/var/lib/rancher/k3s\"]. Сначала измерь, потом чисти, "
-    "потом перепроверь df. Отвечай только JSON одного вызова."
-)
-
-_VALID_TOOLS = {"observe", "act", "node_cmd", "explain", "done"}
+def _clip(s: str) -> str:
+    s = str(s or "")
+    return s if len(s) <= _OUTPUT_LIMIT else s[:_OUTPUT_LIMIT] + "\n...[обрезано]"
 
 
-def _parse_tool_call(text: str) -> dict | None:
-    """Извлекает и валидирует один вызов инструмента из ответа модели (как в solve.py: ищем
-    первый JSON-объект, проверяем схему). При мусоре возвращает None, тогда цикл делает фолбэк."""
-    m = re.search(r"\{.*\}", str(text or ""), re.S)
-    if not m:
-        return None
-    try:
-        d = json.loads(m.group(0))
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(d, dict):
-        return None
-    tool = d.get("tool")
-    if tool not in _VALID_TOOLS:
-        return None
-    # Проверка обязательных полей по инструменту.
-    if tool in ("observe", "act"):
-        if not isinstance(d.get("argv"), list) or not d["argv"]:
-            return None
-        d["argv"] = [str(x) for x in d["argv"]]
-    if tool == "node_cmd":
-        if not isinstance(d.get("argv"), list) or not d["argv"] or not d.get("node"):
-            return None
-        d["argv"] = [str(x) for x in d["argv"]]
-        d["node"] = str(d["node"])
-    if tool == "explain" and not isinstance(d.get("text"), str):
-        return None
-    if tool == "done" and not isinstance(d.get("summary"), str):
-        return None
-    return d
+def _valid_argv(argv) -> bool:
+    return isinstance(argv, list) and bool(argv) and all(isinstance(a, str) for a in argv)
 
 
-def _truncate(text: str) -> str:
-    s = str(text or "")
-    if len(s) <= _OUTPUT_LIMIT:
-        return s
-    return s[:_OUTPUT_LIMIT] + "\n… вывод обрезан …"
-
-
-# ---------------------------------------------------------------------------
-# Исполнение отдельных команд (наблюдение и мутация).
-# ---------------------------------------------------------------------------
-
-
-def _run_node_agent(node: str, argv: list, http_post=None) -> dict:
-    """Исполняет argv на узле node через node-agent (HTTP POST на podIP:9110, заголовок
-    X-NodeAgent-Token). Возвращает результат контракта node-agent либо словарь с ключом error
-    при мягкой деградации (нет токена, нет пода, сетевая ошибка). Не бросает исключений наружу,
-    чтобы отказ node-agent не ронял весь агентный цикл (ADR-0041, мягкая деградация)."""
-    if not NODEAGENT_TOKEN:
-        return {"error": "node-agent недоступен: не задан NODEAGENT_TOKEN"}
-    endpoint = k8s.get_node_agent_endpoint(node)
+def _run_node(node: str, argv, timeout: int = _NODE_TIMEOUT) -> dict:
+    """Исполняет argv на узле через node-agent. Мягкая деградация: нет токена или узла даёт честную
+    ошибку шага, а не падение."""
+    if not config.NODEAGENT_TOKEN:
+        return {"error": "узловые команды недоступны: не задан SENTINEL_NODEAGENT_TOKEN"}
+    real = k8s.resolve_node(node) if node else None
+    endpoint = k8s.get_node_agent_endpoint(real or node) if (real or node) else None
     if not endpoint:
-        return {"error": f"node-agent на узле «{node}» не найден (панель вне кластера или под отсутствует)"}
-    body = {"argv": list(argv), "timeout": NODEAGENT_TIMEOUT}
-    headers = {"X-NodeAgent-Token": NODEAGENT_TOKEN}
+        return {"error": f"node-agent на узле «{node}» не найден (панель вне кластера или узел неизвестен)"}
     try:
-        if http_post is not None:
-            # Внедрённый транспорт для тестов (без сети).
-            resp = http_post(f"{endpoint}/run", body, headers)
-        else:
-            with httpx.Client(timeout=NODEAGENT_TIMEOUT + 5) as c:
-                r = c.post(f"{endpoint}/run", json=body, headers=headers)
-                r.raise_for_status()
-                resp = r.json()
-    except Exception as e:
-        return {"error": f"ошибка вызова node-agent узла «{node}»: {e}"}
-    if not isinstance(resp, dict):
-        return {"error": "node-agent вернул неожиданный ответ"}
-    return {
-        "exit_code": resp.get("exit_code"),
-        "stdout": _truncate(resp.get("stdout", "")),
-        "stderr": _truncate(resp.get("stderr", "")),
-        "duration_ms": resp.get("duration_ms"),
-        "node": resp.get("node", node),
-    }
+        with httpx.Client(timeout=timeout + 5) as c:
+            r = c.post(f"{endpoint}/run", headers={"X-NodeAgent-Token": config.NODEAGENT_TOKEN},
+                       json={"argv": list(argv), "timeout": timeout})
+            r.raise_for_status()
+            return r.json()
+    except httpx.HTTPError as e:
+        return {"error": f"ошибка обращения к node-agent: {e}"}
 
 
-def _run_cluster_read(argv: list) -> dict:
-    """Исполняет read-only kubectl-подобную команду через существующий k8s.py, покрывая частые
-    формы (get pods, get nodes, get events, logs, describe). Прочее чтение кластера, для которого
-    нет прямого метода, честно сообщает об ограничении, а не выдумывает вывод."""
-    if _base(argv[0]) not in ("kubectl", "k", "oc") or len(argv) < 2:
-        return {"error": "локальное чтение вне узла не поддерживается напрямую, используйте node_cmd"}
-    verb = argv[1].lower()
-    resource = argv[2].lower() if len(argv) > 2 else ""
-    if verb == "get" and resource.startswith("pod"):
-        pods = k8s.list_pods()
-        return {"data": pods} if pods is not None else {"error": "вне кластера"}
-    if verb == "get" and resource.startswith("node"):
-        nodes = k8s.list_nodes()
-        return {"data": nodes} if nodes is not None else {"error": "вне кластера"}
-    if verb == "get" and (resource.startswith("deploy")):
-        deps = k8s.list_deployments()
-        return {"data": deps} if deps is not None else {"error": "вне кластера"}
-    if verb == "get" and resource.startswith("event"):
-        evs = k8s.list_events()
-        return {"data": evs} if evs is not None else {"error": "вне кластера"}
-    if verb == "logs" and len(argv) > 2:
-        tail = k8s.pod_log_tail(argv[2], lines=100)
-        return {"data": _truncate(tail)} if tail is not None else {"error": "логи недоступны"}
-    return {"error": f"команда чтения «{' '.join(argv)}» не имеет прямого метода в панели"}
+def _control_node() -> str | None:
+    """Выбирает узел управляющего слоя для кластерных команд без зашитых имён: узел, чья метка роли
+    (SENTINEL_NODE_ROLE_LABEL) указывает на control-plane, определяется живьём через resolve_node;
+    если такого нет, берётся первый узел кластера. Роль в списке узлов не публикуется, поэтому
+    control-plane выясняется именно по метке, а не по полю списка."""
+    nodes = k8s.list_nodes() or []
+    names = [n.get("name") for n in nodes if n.get("name")]
+    for hint in ("control-plane", "controlplane", "master", "control"):
+        resolved = k8s.resolve_node(hint)
+        if resolved in names:
+            return resolved
+    return names[0] if names else None
 
 
-def _base(binary: str) -> str:
-    return os.path.basename(str(binary or "").strip())
+def _cluster_read(argv) -> dict:
+    """Кластерное чтение через API Kubernetes для распознанных намерений kubectl (не требует kubectl
+    и kubeconfig на хосте). Нераспознанное чтение уходит на узловой агент управляющего узла."""
+    base = os.path.basename(argv[0])
+    if base in ("kubectl", "k", "oc") and len(argv) >= 2:
+        verb = argv[1].lower()
+        rest = [a.lower() for a in argv[2:] if not a.startswith("-")]
+        if verb == "events":
+            return {"data": k8s.list_events(), "source": "k8s-api"}
+        if verb == "get":
+            if any(r.startswith(("po", "pod")) for r in rest):
+                return {"data": k8s.list_pods(), "source": "k8s-api"}
+            if any(r.startswith(("no", "node")) for r in rest):
+                return {"data": k8s.list_nodes(), "source": "k8s-api"}
+            if any(r.startswith("event") for r in rest):
+                return {"data": k8s.list_events(), "source": "k8s-api"}
+            if any(r.startswith("deploy") for r in rest):
+                return {"data": k8s.list_deployments(), "source": "k8s-api"}
+        if verb == "logs":
+            pod = next((a for a in argv[2:] if not a.startswith("-")), "")
+            pod = pod.split("/")[-1]
+            return {"data": k8s.pod_log_tail(pod), "source": "k8s-api"}
+    node = _control_node()
+    if not node:
+        return {"error": "не удалось определить управляющий узел для кластерной команды; "
+                         "используйте observe с target=node и явным узлом"}
+    return _run_node(node, argv)
 
 
-def _fingerprint(argv: list, node: str | None = None) -> str:
-    """Отпечаток мутации для гардов: узел плюс канонизированная команда. Одинаковые команды дают
-    одинаковый отпечаток, поэтому кулдаун и лимит попыток работают по существу действия."""
-    return (node or "local") + "|" + " ".join(str(a) for a in argv)
+def _cluster_mutation(argv, now_iso: str) -> dict:
+    """Кластерная мутация через типизированные операции API (rollout restart, delete pod). Прочее
+    исполняется на управляющем узле через node-agent (честный отказ, если недоступно)."""
+    base = os.path.basename(argv[0])
+    if base in ("kubectl", "k", "oc") and len(argv) >= 2:
+        verb = argv[1].lower()
+        if verb == "rollout" and len(argv) >= 3 and argv[2].lower() == "restart":
+            target = next((a for a in argv[3:] if not a.startswith("-")), "")
+            ok, detail = k8s.rollout_restart(target, now_iso)
+            return {"ok": ok, "detail": detail}
+        if verb == "delete" and any(a.lower().startswith(("pod", "po")) for a in argv[2:]):
+            pod = ""
+            for a in argv[2:]:
+                if a.startswith("-") or a.lower() in ("pod", "pods", "po"):
+                    continue
+                pod = a.split("/")[-1]
+                break
+            if pod:
+                ok, detail = k8s.delete_pod(pod)
+                return {"ok": ok, "detail": detail}
+    node = _control_node()
+    if not node:
+        return {"error": "не удалось определить управляющий узел для кластерной мутации"}
+    return _run_node(node, argv)
 
 
-def _guard_service(argv: list) -> str | None:
-    """Имя сервиса для кулдауна перезапусков, если команда это rollout restart или delete pod
-    конкретного деплоймента или пода. Иначе None."""
-    if _base(argv[0]) not in ("kubectl", "k", "oc"):
-        return None
-    joined = " ".join(argv)
-    m = re.search(r"(?:deployment|deploy)[/ ]([a-z0-9-]+)", joined)
-    if m:
-        return m.group(1)
+def _result_ok(res: dict) -> bool:
+    if not isinstance(res, dict):
+        return False
+    if res.get("error"):
+        return False
+    if "ok" in res:
+        return res["ok"] is True
+    # Ответ node-agent: успех только при явном exit_code == 0 (частичный ответ без кода это неуспех).
+    return res.get("exit_code") == 0
+
+
+def _result_text(res: dict) -> str:
+    if not isinstance(res, dict):
+        return str(res)
+    for key in ("stdout", "detail", "error"):
+        v = res.get(key)
+        if v:
+            return _clip(v)
+    if res.get("stderr"):
+        return _clip(res["stderr"])
+    if res.get("data") is not None:
+        return _clip(json.dumps(res["data"], ensure_ascii=False))
+    return ""
+
+
+def _read(argv, target, node, operator) -> dict:
+    """Исполняет чтение и пишет его в аудит (обращение к состоянию протоколируется)."""
+    res = _run_node(node, argv) if target == "node" else _cluster_read(argv)
+    audit.audit_read(operator, "agent.observe", node or target, _result_text(res)[:200],
+                     params={"target": target, "node": node}, argv=list(argv))
+    return res
+
+
+def _fingerprint(argv, target, node) -> str:
+    return f"{target}:{node or '-'}:{' '.join(argv)}"
+
+
+def _restart_target(argv) -> str | None:
+    """Имя сервиса, который перезапускает команда (для denylist/allowlist и кулдауна сервиса)."""
+    base = os.path.basename(argv[0])
+    if base in ("kubectl", "k", "oc"):
+        if len(argv) >= 3 and argv[1].lower() == "rollout" and argv[2].lower() == "restart":
+            tail = next((a for a in argv[3:] if not a.startswith("-")), "")
+            return tail.split("/")[-1] or None
+        if len(argv) >= 2 and argv[1].lower() == "delete":
+            for a in argv[2:]:
+                if a.startswith("-") or a.lower() in ("pod", "pods", "po"):
+                    continue
+                return k8s.pod_service(a.split("/")[-1]) or a.split("/")[-1]
+    if base == "systemctl" and len(argv) >= 3 and argv[1].lower() in ("restart", "reload", "stop", "start"):
+        return argv[2]
     return None
 
 
-def _guard_action(cls: str, argv: list) -> str:
-    """Имя действия для гардов. Совпадение с именами из autopilot (restart, delete_pod) даёт
-    учёт кулдауна сервиса; прочие мутации проходят как generic-действие класса."""
-    joined = " ".join(argv)
-    if "rollout" in joined and "restart" in joined:
-        return "restart"
-    if "delete" in joined and re.search(r"\bpo(d|ds)?\b", joined):
-        return "delete_pod"
-    return cls
+def _execute_mutation(argv, target, node, operator, confirmed: bool) -> dict:
+    """Исполняет мутацию под гардами и аудитом. Резервирует попытку ДО исполнения (закрытие гонки),
+    затем фиксирует исход. confirmed=True для подтверждённых оператором отложенных команд."""
+    now = time.time()
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+    cls = policy.classify(argv)
+    service = _restart_target(argv) or (node or target)
+    fp = _fingerprint(argv, target, node)
+
+    if not confirmed:
+        allowed, why = guards.check(fp, "act", service, now)
+        if not allowed:
+            audit.audit_write(operator, "agent.act",
+                              {"target": target, "node": node, "class": cls, "blocked": why},
+                              node or target, False, f"заблокировано гардом: {why}",
+                              op_type=audit.OP_EXECUTE, danger_class=cls, argv=list(argv))
+            return {"error": f"заблокировано гардом: {why}", "blocked": True}
+        guards.record_attempt(fp, "act", service, now)
+
+    res = _run_node(node, argv) if target == "node" else _cluster_mutation(argv, now_iso)
+    ok = _result_ok(res)
+    if not confirmed:
+        guards.record_result(fp, ok, now)
+    actor = operator if confirmed else audit.ACTOR_AGENT
+    audit.audit_write(actor, "agent.act", {"target": target, "node": node, "class": cls},
+                      node or target, confirmed,
+                      ("успех: " if ok else "неудача: ") + _result_text(res)[:400],
+                      op_type=audit.OP_EXECUTE, danger_class=cls, argv=list(argv))
+    return res
+
+
+# ---------------------------------------------------------------------------
+# Гейт автономии с учётом allowlist и denylist перезапуска.
+# ---------------------------------------------------------------------------
+
+def _decision(argv, level: str) -> str:
+    """Действующее решение гейта: базовое из policy.gate плюс продуктовый слой allowlist/denylist
+    перезапуска сервисов. Перезапуск (и равносильное ему удаление пода) сервиса из denylist или
+    вне allowlist требует подтверждения независимо от уровня. Пустой allowlist по умолчанию означает
+    «автономный перезапуск выключен»: на незнакомом кластере агент никого не перезапускает сам, а
+    предлагает оператору, пока тот не перечислит доверенные безсостоятельные сервисы."""
+    base = policy.gate(argv, level, config.PROTECTED_PATTERNS)
+    if base != policy.AUTO:
+        return base
+    svc = _restart_target(argv)
+    if svc:
+        if svc in config.RESTART_DENYLIST or svc not in config.RESTART_ALLOWLIST:
+            return policy.CONFIRM
+    # Гейт по целям уровня обслуживания: автономная мутация без прожигания бюджета ошибок
+    # понижается до предложения. Так ремонт запускается сам только когда страдает пользователь,
+    # а не от абстрактной уверенности. Слой опционален: при незаданных SLO гейт всегда разрешает.
+    er = getattr(_slo_ctx, "error_rate", None)
+    if er is not None and not slo.gate(slo.evaluate(er)):
+        return policy.PROPOSE
+    return base
 
 
 # ---------------------------------------------------------------------------
 # Обработка одного вызова инструмента.
 # ---------------------------------------------------------------------------
 
+def _handle_tool(name: str, args: dict, operator: str, level: str) -> tuple[dict, str, bool]:
+    """Обрабатывает один вызов инструмента модели. Возвращает (шаг трейса, содержимое tool_result
+    для модели, stop). stop=True завершает ход (отложенное подтверждение), иначе цикл продолжается."""
+    if name == "explain":
+        text = str(args.get("text", "")).strip()
+        return {"step": "explain", "text": text}, "ок", False
+    if name == "done":
+        summary = str(args.get("summary", "")).strip()
+        return {"step": "done", "summary": summary}, "ок", False
+    if mcp_tools.is_mcp_tool(name):
+        return _handle_mcp(name, args, operator, level)
 
-def _handle_observe(call: dict, http_post=None) -> dict:
-    """observe: классификатор обязан подтвердить read, иначе шаг трактуется как act. Read не
-    считается в бюджет гардов и исполняется сразу."""
-    argv = call["argv"]
+    argv = args.get("argv")
+    target = (args.get("target") or "cluster").lower()
+    node = args.get("node") or ""
+    why = str(args.get("why", "")).strip()
+    if not _valid_argv(argv):
+        step = {"step": name, "argv": argv, "node": node, "outcome": "error",
+                "result": {"error": "argv должен быть непустым списком строк"}}
+        return step, "ошибка: argv должен быть непустым списком строк", False
+    if target == "node" and not node:
+        step = {"step": "node_cmd", "argv": argv, "node": node, "outcome": "error",
+                "result": {"error": "для target=node нужно имя узла"}}
+        return step, "ошибка: для target=node укажите node", False
+
     cls = policy.classify(argv)
-    if cls != policy.READ:
-        # Модель назвала observe, но команда мутирующая: перенаправляем в act (fail-safe).
-        return _handle_act({"argv": argv, "target": call.get("target", "cluster"),
-                            "why": "команда, названная наблюдением, оказалась мутирующей"},
-                           http_post=http_post)
-    target = call.get("target", "cluster")
-    if target in ("control", "gpu") or _base(argv[0]) not in ("kubectl", "k", "oc"):
-        # Узловое или локальное чтение идёт через node-agent (если задан узел через target).
-        node = target if target in ("control", "gpu") else "control"
-        res = _run_node_agent(node, argv, http_post=http_post)
-    else:
-        res = _run_cluster_read(argv)
-    return {"step": "observe", "argv": argv, "class": cls, "counts_budget": False,
-            "target": target, "result": res}
+    step_kind = "node_cmd" if target == "node" else "act"
 
-
-def _handle_act(call: dict, operator: str = "agent", http_post=None,
-                node: str | None = None) -> dict:
-    """act и node_cmd: классификация и политика по режиму. Возвращает структуру шага. Мутация
-    проходит через guards ПЕРЕД исполнением; finance и destructive в auto уходят в отложенное
-    подтверждение; в manual любая мутация возвращается предложением."""
-    argv = call["argv"]
-    why = call.get("why", "")
-    cls = policy.classify(argv)
-    mode = get_mode()
-
-    step = {"step": "node_cmd" if node else "act", "argv": argv, "class": cls,
-            "class_ru": policy.describe(cls), "why": why, "counts_budget": True,
-            "node": node, "target": call.get("target")}
-
-    # Read, ошибочно пришедшее в act: исполняем как наблюдение, в бюджет не считаем.
+    # Класс команды решает классификатор вне модели, а не её ярлык инструмента. Любая команда
+    # класса read исполняется как чтение (безопасно всегда), даже если модель назвала её act; и
+    # наоборот, названная observe мутация проходит гейт автономии, а не проскакивает как чтение.
     if cls == policy.READ:
-        step["counts_budget"] = False
-        if node:
-            step["result"] = _run_node_agent(node, argv, http_post=http_post)
-        else:
-            step["result"] = _run_cluster_read(argv)
-        return step
+        res = _read(argv, target, node, operator)
+        step = {"step": "observe", "argv": argv, "node": node, "outcome": "executed", "result": res}
+        return step, _result_text(res) or "нет вывода", False
 
-    # finance и destructive: подтверждение обязательно В ЛЮБОМ режиме. Не исполняем автономно.
-    if policy.requires_confirmation(cls):
-        token = _stage_pending(argv, cls, node, why, operator)
-        step["outcome"] = "pending_confirm"
-        step["confirm_token"] = token
-        step["message"] = (f"Требуется подтверждение оператора: {policy.describe(cls)}. "
-                           f"Команда: {' '.join(argv)}. Подтвердите через /agent/confirm.")
-        return step
+    decision = _decision(argv, level)
+    if decision == policy.PROPOSE:
+        step = {"step": step_kind, "argv": argv, "node": node, "class": cls, "outcome": "proposed",
+                "result": {"detail": "уровень наблюдения: действие только предложено, не исполнено"},
+                "why": why}
+        return step, ("Уровень автономии observe: это действие только предложение оператору, оно "
+                      "не исполнено. Продолжай наблюдать и заверши done со сводкой предложений."), False
+    if decision == policy.CONFIRM:
+        token, msg = _stage_pending(argv, target, node, why, cls, operator)
+        step = {"step": step_kind, "argv": argv, "node": node, "class": cls,
+                "outcome": "pending_confirm", "confirm_token": token, "message": msg, "why": why}
+        return step, msg + " Ход остановлен до подтверждения оператора.", True
 
-    # safe_write. В manual-режиме не исполняем сами, а предлагаем оператору.
-    if mode == "manual":
-        token = _stage_pending(argv, cls, node, why, operator)
-        step["outcome"] = "proposed"
-        step["confirm_token"] = token
-        step["message"] = (f"Ручной режим: предлагаю мутацию (ремонт). Команда: {' '.join(argv)}. "
-                           f"Подтвердите через /agent/confirm или введите свою команду.")
-        return step
-
-    # auto-режим, safe_write: исполняем через гарды.
-    return _execute_mutation(argv, cls, node, why, operator, http_post=http_post, step=step)
+    # AUTO: исполняем автономно под гардами и аудитом.
+    res = _execute_mutation(argv, target, node, operator, confirmed=False)
+    outcome = "blocked" if isinstance(res, dict) and res.get("blocked") else "executed"
+    step = {"step": step_kind, "argv": argv, "node": node, "class": cls, "outcome": outcome,
+            "result": res, "why": why}
+    return step, _result_text(res) or ("исполнено" if _result_ok(res) else "нет вывода"), False
 
 
-def _stage_pending(argv, cls, node, why, operator) -> str:
-    """Кладёт мутацию в PENDING с одноразовым токеном и TTL. Возвращает токен."""
-    token = secrets.token_hex(8)
-    PENDING[token] = {"argv": list(argv), "class": cls, "node": node, "why": why,
-                      "operator": operator, "ts": time.time()}
-    return token
+def _handle_mcp(name: str, args: dict, operator: str, level: str) -> tuple[dict, str, bool]:
+    """Обрабатывает вызов инструмента открытого сервера MCP. Читающий инструмент (сервер помечен
+    read_only) исполняется свободно с аудитом чтения. Инструмент потенциально мутирующего сервера
+    не исполняется автономно: на уровне observe это предложение, иначе постановка в отложенное
+    подтверждение оператора. Так структурированный вызов MCP не обходит защитную модель продукта."""
+    reg = _mcp_registry()
+    tool = reg.get(name)
+    if tool is None:
+        step = {"step": "act", "argv": [name], "outcome": "error",
+                "result": {"error": "инструмент MCP не найден или сервер не подключён"}}
+        return step, "ошибка: инструмент MCP не найден", False
+    if tool.read_only:
+        res = reg.call(name, args or {})
+        ok = not res.get("error")
+        text = res.get("text") or res.get("error") or ""
+        audit.audit_read(operator, f"mcp.{name}", tool.server, text[:200], params={"args": args})
+        step = {"step": "observe", "argv": [name], "node": tool.server, "mcp": True,
+                "outcome": "executed" if ok else "error", "result": res}
+        return step, _clip(text) or "нет вывода", False
+    if level == config.AUTONOMY_OBSERVE:
+        step = {"step": "act", "argv": [name], "node": tool.server, "mcp": True, "outcome": "proposed",
+                "result": {"detail": "уровень наблюдения: инструмент MCP только предложен"}}
+        return step, "Уровень observe: инструмент MCP не исполнен, только предложен оператору.", False
+    token, msg = _stage_pending_mcp(name, args or {}, operator, tool.server)
+    step = {"step": "act", "argv": [name], "node": tool.server, "mcp": True,
+            "outcome": "pending_confirm", "confirm_token": token, "message": msg}
+    return step, msg + " Ход остановлен до подтверждения оператора.", True
 
 
-def _execute_mutation(argv, cls, node, why, operator, http_post=None, step=None) -> dict:
-    """Исполняет мутацию через гарды и аудит. Гарды вызываются ПЕРЕД исполнением: при отказе
-    команда не исполняется, шаг помечается blocked. Каждое исполнение пишется в audit.py."""
-    if step is None:
-        step = {"step": "node_cmd" if node else "act", "argv": argv, "class": cls,
-                "class_ru": policy.describe(cls), "why": why, "node": node, "counts_budget": True}
-    fp = _fingerprint(argv, node)
-    action = _guard_action(cls, argv)
-    service = _guard_service(argv)
-    allowed, reason = guards.check(fp, action, service=service)
-    if not allowed:
-        step["outcome"] = "blocked"
-        step["message"] = f"Гард запретил действие: {reason}"
-        audit_write(operator, "agent.act", {"argv": argv, "class": cls, "node": node},
-                    node or "cluster", confirmed=False, result=f"заблокировано гардом: {reason}")
-        return step
+def _stage_pending_mcp(name: str, args: dict, operator: str, server: str) -> tuple[str, str]:
+    """Ставит мутирующий вызов инструмента MCP в отложенное подтверждение."""
+    now = time.time()
+    token = secrets.token_urlsafe(16)
+    with _LOCK:
+        data = _pending_prune(_pending_load(), now)
+        data[token] = {"kind": "mcp", "tool": name, "args": args, "server": server,
+                       "operator": operator, "created": now, "expires": now + PENDING_TTL_SECONDS}
+        _pending_save(data)
+    audit.audit_pending(operator, "mcp.stage", {"tool": name, "args": args}, server, "mcp_mutation")
+    msg = f"Требуется подтверждение оператора: вызов инструмента MCP {name} на сервере {server}."
+    return token, msg
 
-    # Регистрируем попытку (бюджет часа, кулдаун сервиса) ДО исполнения.
-    guards.record_attempt(fp, action, service=service)
-    if node:
-        res = _run_node_agent(node, argv, http_post=http_post)
-        ok = isinstance(res, dict) and res.get("error") is None and (res.get("exit_code") in (0, None))
+
+def _confirm_mcp(p: dict, operator: str) -> dict:
+    """Исполняет подтверждённый вызов инструмента MCP под аудитом."""
+    reg = _mcp_registry()
+    res = reg.call(p["tool"], p.get("args") or {})
+    ok = not res.get("error")
+    text = res.get("text") or res.get("error") or ""
+    audit.audit_write(operator, "mcp.call", {"tool": p["tool"]}, p.get("server") or "mcp", True,
+                      ("успех: " if ok else "ошибка: ") + text[:400],
+                      op_type=audit.OP_EXECUTE, danger_class="mcp")
+    return {"ok": ok, "message": ("Исполнено." if ok else "Не удалось исполнить.")
+            + (f" {_clip(text)}" if text else ""), "result": res}
+
+
+# ---------------------------------------------------------------------------
+# Системная инструкция и схема инструментов.
+# ---------------------------------------------------------------------------
+
+_SYSTEM = (
+    "Ты автономный инженер по надёжности и эксплуатации (SRE) за терминалом кластера Kubernetes. "
+    "Тебе дана инструкция оператора и актуальный снимок кластера. Ты домен-агностичен: не знаешь "
+    "заранее имён сервисов и узлов, а выясняешь их наблюдением и из снимка. На каждом шаге вызывай "
+    "инструменты. Порядок работы: сначала наблюдай (observe), рассуждай (explain), затем действуй "
+    "(act), после проверяй результат наблюдением и заверши done со сводкой по-русски.\n"
+    "target у observe и act это 'cluster' (поды, узлы, события, деплойменты, логи через API "
+    "кластера) или 'node' (диск, процессор, память, процессы, containerd, systemctl на конкретном "
+    "узле; тогда укажи node из снимка). argv это список отдельных аргументов, без склейки команд и "
+    "без пробелов внутри одного аргумента.\n"
+    "Опасное (удаление данных, томов, пространств имён, деплойментов, DROP таблиц, перезапуск "
+    "хранилищ) не пытайся обойти: предлагай командой, детерминированная система сама решит, нужно "
+    "ли подтверждение оператора, и остановит ход. Не выдумывай вывод команд: тебе возвращается "
+    "фактический результат каждого шага."
+)
+
+_TOOLS = [
+    {"name": "observe", "description": "Прочитать состояние кластера или узла.",
+     "input_schema": {"type": "object", "properties": {
+         "argv": {"type": "array", "items": {"type": "string"},
+                  "description": "команда чтения списком аргументов"},
+         "target": {"type": "string", "enum": ["cluster", "node"]},
+         "node": {"type": "string", "description": "имя узла для target=node"}},
+         "required": ["argv", "target"]}},
+    {"name": "act", "description": "Мутирующая команда в кластере или на узле.",
+     "input_schema": {"type": "object", "properties": {
+         "argv": {"type": "array", "items": {"type": "string"}},
+         "target": {"type": "string", "enum": ["cluster", "node"]},
+         "node": {"type": "string"},
+         "why": {"type": "string", "description": "зачем это действие, по-русски"}},
+         "required": ["argv", "target", "why"]}},
+    {"name": "explain", "description": "Промежуточное объяснение оператору по-русски.",
+     "input_schema": {"type": "object", "properties": {"text": {"type": "string"}},
+                      "required": ["text"]}},
+    {"name": "done", "description": "Завершить задачу с итогом по-русски.",
+     "input_schema": {"type": "object", "properties": {"summary": {"type": "string"}},
+                      "required": ["summary"]}},
+]
+
+
+def _cluster_snapshot() -> str:
+    """Актуальный снимок топологии как факт для модели: пространство имён и узлы с ролями. Без
+    зашитых имён; при недоступности API честно сообщает об этом."""
+    nodes = k8s.list_nodes()
+    lines = [f"Пространство имён: {config.NAMESPACE}."]
+    if nodes is None:
+        lines.append("Снимок узлов недоступен (панель вне кластера): опирайся на наблюдение.")
+    elif not nodes:
+        lines.append("Узлы не обнаружены.")
     else:
-        res = _run_cluster_mutation(argv)
-        ok = isinstance(res, dict) and res.get("ok") is True
-    guards.record_result(fp, bool(ok))
-    step["outcome"] = "executed" if ok else "failed"
-    step["result"] = res
-    audit_write(operator, "agent.act", {"argv": argv, "class": cls, "node": node},
-                node or "cluster", confirmed=(operator != "agent"),
-                result=("успех" if ok else "неудача") + f": {_truncate(json.dumps(res, ensure_ascii=False))[:400]}")
-    return step
-
-
-def _run_cluster_mutation(argv: list) -> dict:
-    """Исполняет ремонтную мутацию в кластере через существующий k8s.py (rollout restart и
-    delete pod покрыты прямыми методами с их allowlist и denylist). Прочее честно сообщает об
-    ограничении, а не выдумывает исполнение."""
-    if _base(argv[0]) not in ("kubectl", "k", "oc"):
-        return {"ok": False, "error": "локальная мутация вне узла не поддерживается, используйте node_cmd"}
-    joined = " ".join(argv)
-    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    if "rollout" in joined and "restart" in joined:
-        m = re.search(r"(?:deployment|deploy)[/ ]([a-z0-9-]+)", joined)
-        if m:
-            ok, detail = k8s.rollout_restart(m.group(1), now_iso)
-            return {"ok": bool(ok), "detail": detail}
-        return {"ok": False, "error": "не распознан деплоймент для rollout restart"}
-    if "delete" in joined:
-        m = re.search(r"(?:pod|po)[/ ]([a-z0-9-]+)", joined)
-        if m:
-            ok, detail = k8s.delete_pod(m.group(1))
-            return {"ok": bool(ok), "detail": detail}
-        return {"ok": False, "error": "не распознан под для delete pod"}
-    return {"ok": False, "error": f"мутация «{joined}» не имеет прямого метода в панели"}
+        lines.append("Узлы кластера:")
+        for n in nodes:
+            flags = []
+            if n.get("ready") is False:
+                flags.append("не готов")
+            if n.get("disk_pressure"):
+                flags.append("давление диска")
+            if n.get("memory_pressure"):
+                flags.append("давление памяти")
+            state = ", ".join(flags) if flags else "в норме"
+            lines.append(f"  {n.get('name')} ({state})")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Подтверждение отложенных команд.
+# Публичный вход: агентный цикл и одиночная команда.
 # ---------------------------------------------------------------------------
 
-
-def confirm(token: str, operator: str, http_post=None) -> dict:
-    """Подтверждает и исполняет ранее отложенную finance, destructive или (в manual) safe_write
-    команду. Токен одноразовый, с TTL. Исполнение идёт через те же гарды и аудит."""
-    p = PENDING.pop(token, None)
-    if not p:
-        return {"ok": False, "message": "Подтверждение недействительно или уже использовано."}
-    if time.time() - p["ts"] > PENDING_TTL_SECONDS:
-        return {"ok": False, "message": "Подтверждение истекло, повторите команду."}
-    step = _execute_mutation(p["argv"], p["class"], p.get("node"), p.get("why", ""),
-                             operator, http_post=http_post)
-    step["confirmed_by"] = operator
-    ok = step.get("outcome") == "executed"
-    return {"ok": ok, "step": step,
-            "message": (f"Подтверждено оператором «{operator}». "
-                       f"Результат: {step.get('outcome')}." )}
-
-
-# ---------------------------------------------------------------------------
-# Агентный цикл и фолбэк без модели.
-# ---------------------------------------------------------------------------
-
-
-def _fallback_single_command(message: str, operator: str, http_post=None) -> dict:
-    """Фолбэк без языковой модели: трактует инструкцию оператора как ОДНУ команду (строку
-    оболочки), безопасно разбирает её в argv (shlex, без исполнения оболочки), классифицирует и
-    исполняет либо предлагает по политике. Планирования нет."""
-    try:
-        argv = shlex.split(message.strip())
-    except ValueError:
-        argv = message.strip().split()
-    if not argv:
-        return {"steps": [], "mode": get_mode(), "model": False,
-                "message": "Пустая команда."}
-    # Если первый токен это read-only или явная команда, классифицируем и исполняем как act/observe.
-    cls = policy.classify(argv)
-    if cls == policy.READ:
-        step = _handle_observe({"argv": argv, "target": "cluster"}, http_post=http_post)
-    else:
-        step = _handle_act({"argv": argv, "target": "cluster", "why": "прямая команда оператора"},
-                           operator=operator, http_post=http_post)
-    return {"steps": [step], "mode": get_mode(), "model": False,
-            "message": "Модель недоступна: исполнена одна команда оператора без планирования."}
-
-
-def _step_feedback(step) -> str:
-    """Строка обратной связи модели по шагу. Предпочитаем ФАКТИЧЕСКИЙ результат команды (вывод
-    node-agent или кластера с stdout и кодом возврата), иначе сообщение, иначе исход. Без подачи
-    результата модель не видит вывод df, du, docker и решает, что команда вернула None, и мечется
-    с повторами. Read-команды исхода (outcome) не имеют, поэтому опора именно на result."""
-    if step.get("result") is not None:
-        return _truncate(json.dumps(step["result"], ensure_ascii=False))[:800]
-    if step.get("message"):
-        return f"{step.get('outcome') or 'нет исхода'}: {step['message']}"
-    return str(step.get("outcome") or "нет данных")
-
-
-def run(message: str, operator: str, llm_complete=None, http_post=None,
-        max_steps: int | None = None) -> dict:
-    """Запускает агентный цикл над инструкцией оператора. Возвращает полный трейс шагов, чтобы
-    панель могла отобразить или сэмулировать стрим. Без модели уходит в фолбэк одной команды.
-
-    llm_complete это функция prompt даёт text (переиспользуй commands._llm_complete). http_post
-    это внедряемый транспорт node-agent для тестов; в проде None (реальный httpx)."""
-    if llm_complete is None:
-        return _fallback_single_command(message, operator, http_post=http_post)
-
-    max_steps = AGENT_MAX_STEPS if max_steps is None else max_steps
-    steps: list = []
-    transcript = f"Инструкция оператора: {message}\n"
-    mutations_used = 0
-    seen_cmds: dict = {}  # сигнатура команды в этом запуске -> сколько раз вызвана (анти-цикл)
-
-    for _ in range(max_steps * 3):  # запас итераций: observe не тратит бюджет шагов
-        if mutations_used >= max_steps:
-            steps.append({"step": "explain", "text": "Достигнут предел шагов агента, останавливаюсь."})
-            break
-        prompt = SYSTEM + "\n\n" + transcript + "\nJSON:"
+def run(instruction: str, operator: str = "operator", *, client: llm.LLMClient | None = None,
+        seed_context: str = "") -> dict:
+    """Исполняет запрос оператора. При наличии клиента модели ведёт полноценный агентный цикл; без
+    клиента исполняет инструкцию как одиночную команду (классификация плюс гейт). Возвращает трейс
+    шагов, действующий уровень автономии и итоговую сводку."""
+    level = effective_autonomy()
+    instruction = str(instruction or "").strip()
+    if client is None and llm.is_configured():
         try:
-            text = llm_complete(prompt)
-        except Exception as e:
-            steps.append({"step": "error", "text": f"Модель недоступна на шаге: {e}"})
-            break
-        call = _parse_tool_call(text)
-        if call is None:
-            # Мусор от модели: фолбэк, завершаем честной ошибкой шага, не зацикливаемся.
-            steps.append({"step": "error", "text": "Модель вернула не разобранный JSON, останавливаюсь.",
-                          "raw": _truncate(text)})
-            break
-        tool = call["tool"]
+            client = llm.build_client()
+        except Exception:  # noqa: BLE001 недоступный SDK не должен ронять панель
+            client = None
 
-        # Анти-цикл в пределах запуска: одну и ту же команду не гоняем более двух раз, даже если
-        # модель настаивает. Защищает от залипания, когда модель повторяет действие вместо разбора
-        # уже полученного результата.
-        if tool in ("observe", "act", "node_cmd"):
-            sig = (tool, json.dumps(call.get("argv"), ensure_ascii=False, sort_keys=True), call.get("node"))
-            seen_cmds[sig] = seen_cmds.get(sig, 0) + 1
-            if seen_cmds[sig] >= 3:
-                steps.append({"step": "explain",
-                              "text": "Останавливаюсь: команда повторяется без нового результата, "
-                                      "нужен другой подход или внимание оператора."})
+    if client is None:
+        return _run_single(instruction, operator, level)
+
+    conv = client.start(_SYSTEM, _build_tools())
+    prompt = _cluster_snapshot() + "\n\nИнструкция оператора: " + instruction
+    if seed_context:
+        prompt += "\n\nКонтекст: " + seed_context
+    client.send_user(conv, prompt)
+
+    steps: list[dict] = []
+    for _ in range(AGENT_MAX_STEPS):
+        try:
+            turn = client.run(conv)
+        except Exception as e:  # noqa: BLE001 честная ошибка шага, не падение панели
+            steps.append({"step": "error", "text": f"ошибка обращения к модели: {e}"})
+            break
+        if turn.text and not turn.tool_calls:
+            steps.append({"step": "explain", "text": turn.text})
+        results = []
+        stop = False
+        for call in turn.tool_calls:
+            step, content, do_stop = _handle_tool(call.name, call.input or {}, operator, level)
+            steps.append(step)
+            results.append((call.id, _clip(content), step.get("outcome") == "error"))
+            if step.get("step") == "done" or do_stop:
+                stop = True
                 break
-
-        if tool == "done":
-            steps.append({"step": "done", "summary": call.get("summary", "")})
+        if stop:
             break
-        if tool == "explain":
-            step = {"step": "explain", "text": call.get("text", "")}
-            steps.append(step)
-            transcript += f"[explain] {step['text']}\n"
-            continue
-        if tool == "observe":
-            step = _handle_observe(call, http_post=http_post)
-            steps.append(step)
-            transcript += f"[observe] {' '.join(call['argv'])} -> {_truncate(json.dumps(step['result'], ensure_ascii=False))[:600]}\n"
-            continue
-        if tool == "act":
-            step = _handle_act(call, operator="agent", http_post=http_post)
-            steps.append(step)
-            if step.get("counts_budget"):
-                mutations_used += 1
-            transcript += f"[act] {' '.join(call['argv'])} -> {_step_feedback(step)}\n"
-            continue
-        if tool == "node_cmd":
-            step = _handle_act({"argv": call["argv"], "why": call.get("why", ""),
-                                "target": call["node"]},
-                               operator="agent", http_post=http_post, node=call["node"])
-            steps.append(step)
-            if step.get("counts_budget"):
-                mutations_used += 1
-            transcript += f"[node_cmd {call['node']}] {' '.join(call['argv'])} -> {_step_feedback(step)}\n"
-            continue
+        if not turn.tool_calls:
+            break  # модель завершила ответ текстом
+        client.send_tool_results(conv, results)
 
-    return {"steps": steps, "mode": get_mode(), "model": True, "message": "Агентный цикл завершён."}
+    return {"steps": steps, "autonomy": level, "mode": level, "summary": _summary(steps)}
 
 
-# ---------------------------------------------------------------------------
-# Расследование инцидента агентом (ADR-0041, разделы 3, 7). Инцидент больше не
-# сваливается на оператора текстом-отпиской «проверьте вручную»: его факты
-# передаются агентному циклу, чтобы агент сам пошёл за логами (kubectl logs, du,
-# df, docker system df через observe и node_cmd), поставил диагноз и в auto-режиме
-# выполнил безопасный ремонт (safe_write). Гарды (бюджет, кулдаун, предохранитель,
-# осцилляция) остаются на месте: они вызываются внутри _handle_act перед каждой
-# мутацией, поэтому расследование не может обойти ограничители.
-# ---------------------------------------------------------------------------
+def _run_single(instruction: str, operator: str, level: str) -> dict:
+    """Фолбэк без модели: инструкция оператора трактуется как одна команда. Для узла оператор пишет
+    префикс 'node:<узел> ', иначе команда идёт в кластер."""
+    target, node = "cluster", ""
+    if instruction.lower().startswith("node:"):
+        head, _, rest = instruction[5:].partition(" ")
+        node, target, instruction = head.strip(), "node", rest.strip()
+    try:
+        argv = shlex.split(instruction)
+    except ValueError:
+        argv = instruction.split()
+    if not _valid_argv(argv):
+        return {"steps": [{"step": "error", "text": "пустая команда"}], "autonomy": level,
+                "mode": level, "summary": "пустая команда"}
+    step, _content, _stop = _handle_tool("act", {"argv": argv, "target": target, "node": node,
+                                                 "why": "команда оператора"}, operator, level)
+    return {"steps": [step], "autonomy": level, "mode": level, "summary": _summary([step])}
 
-# Узел для узловых команд диагноза по умолчанию. Диск, du и docker system df имеют
-# смысл на конкретном хосте, поэтому агенту подсказывается имя GPU-узла из окружения.
-GPU_NODE = os.getenv("ADMINCHAT_GPU_NODE", "gooseek")
 
-
-def _incident_brief(verdict: dict) -> str:
-    """Короткая сводка фактов инцидента для инструкции агенту: статус, первопричина,
-    сработавшие детекторы, узел, сервис или под, ключевые параметры. Числа сохраняются,
-    чтобы агент видел процент заполнения диска и имена ресурсов."""
+def investigate(verdict: dict, *, operator: str = "operator",
+                client: llm.LLMClient | None = None) -> dict:
+    """Агентный разбор инцидента: цикл над готовым вердиктом RCA (расследование плюс безопасный
+    ремонт). Вердикт передаётся модели как контекст."""
     v = verdict or {}
-    params = v.get("params") or {}
     parts = []
     if v.get("root_cause"):
-        parts.append(f"Первопричина: {v['root_cause']}.")
+        parts.append(f"Предполагаемая первопричина: {v['root_cause']}.")
     if v.get("status"):
         parts.append(f"Статус: {v['status']}.")
-    dets = v.get("detectors") or []
-    if dets:
-        parts.append("Детекторы: " + ", ".join(str(d) for d in dets) + ".")
-    for key, ru in (("service", "сервис"), ("pod", "под"), ("node", "узел"),
-                    ("fs", "том"), ("store", "хранилище"), ("percent", "заполнение, %"),
-                    ("used_percent", "заполнение, %"), ("culprit", "виновник")):
-        if params.get(key) not in (None, ""):
-            parts.append(f"{ru}: {params[key]}.")
-    if v.get("action"):
-        parts.append(f"Рекомендация RCA: {v['action']}.")
-    return " ".join(parts) or "Факты инцидента не классифицированы."
+    for e in (v.get("evidence") or [])[:5]:
+        snip = e.get("snippet") if isinstance(e, dict) else str(e)
+        if snip:
+            parts.append(f"Свидетельство: {snip}")
+    context = " ".join(parts) or "Вердикт без деталей."
+    # Ставим контекст надёжности на время разбора: доля ошибок из вердикта питает SLO-гейт
+    # автономии. Снимаем в finally, чтобы поток не унёс контекст в последующие вызовы.
+    _slo_ctx.error_rate = v.get("error_rate")
+    try:
+        return run("Разберись в инциденте и, если безопасно, устрани первопричину.",
+                   operator, client=client, seed_context=context)
+    finally:
+        _slo_ctx.error_rate = None
 
 
-def _incident_instruction(verdict: dict) -> str:
-    """Строит инструкцию оператора для агентного цикла из фактов инцидента. Инструкция
-    на русском задаёт агенту порядок: собрать факты наблюдением (df, du, docker system df,
-    kubectl logs), объяснить диагноз, выполнить безопасный ремонт в auto-режиме, проверить
-    результат. Опасное (destructive, finance) агент лишь предложит на подтверждение."""
-    brief = _incident_brief(verdict)
-    return (
-        f"Расследуй инцидент и по возможности устрани его. {brief} "
-        f"Сначала собери факты наблюдением: на затронутом узле (например «{GPU_NODE}» или "
-        "«control») выполни df и du по подозрительным путям и docker system df, а в кластере "
-        "посмотри логи виновного пода (kubectl logs). Объясни оператору по-русски, что именно "
-        "не так. Затем, если это безопасный ремонт (освобождение места очисткой docker system "
-        "prune и crictl rmi --prune, перезапуск сервиса, возврат заданий в очередь), выполни "
-        "его. Если требуется необратимое действие или деньги тенанта, не выполняй сам: собери "
-        "факты и предложи конкретную команду на подтверждение. После ремонта проверь результат "
-        "наблюдением и заверши."
-    )
-
-
-def investigate(verdict: dict, operator: str = "agent", llm_complete=None,
-                http_post=None, max_steps: int | None = None) -> dict:
-    """Запускает агентный цикл над фактами инцидента (расследование плюс ремонт). Возвращает
-    тот же трейс шагов, что и run, плюс поле instruction (что именно поручено агенту). Без
-    модели уходит в тот же фолбэк run: агент честно сообщает, что планирование недоступно, но
-    хотя бы исполняет собранную рекомендацию как одну команду, если она распознаётся. Гарды
-    остаются активными: расследование не может их обойти."""
-    instruction = _incident_instruction(verdict)
-    result = run(instruction, operator, llm_complete=llm_complete, http_post=http_post,
-                 max_steps=max_steps)
-    result["instruction"] = instruction
-    return result
+def _summary(steps: list[dict]) -> str:
+    for s in reversed(steps):
+        if s.get("step") == "done" and s.get("summary"):
+            return s["summary"]
+    for s in reversed(steps):
+        if s.get("step") == "explain" and s.get("text"):
+            return s["text"]
+    for s in reversed(steps):
+        if s.get("step") == "error" and s.get("text"):
+            return s["text"]
+    return "Готово."
 
 
 def state_summary() -> dict:
-    """Состояние агента для GET /agent/state: режим, гарды (бюджет, кулдауны, предохранитель),
-    число отложенных подтверждений."""
-    g = guards.state_summary()
-    return {
-        "mode": get_mode(),
-        "guards": g,
-        "pending_confirmations": len(PENDING),
-    }
+    """Сводка состояния агента для карточки интерфейса: уровень автономии, готовность модели,
+    состояние гардов, число отложенных подтверждений."""
+    with _LOCK:
+        pending = len(_pending_prune(_pending_load(), time.time()))
+    return {"autonomy": effective_autonomy(), "mode": effective_autonomy(),
+            "llm_configured": llm.is_configured(), "observe_only": guards.observe_only(),
+            "pending": pending, "guards": guards.state_summary()}

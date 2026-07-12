@@ -1,8 +1,14 @@
-"""Формирование статусных карточек дежурного (ADR-0038, этап 2: команды /status, /hw,
-/queue, /agent). Модуль сознательно чистый: все функции принимают уже собранные данные
-(списки подов и узлов, сводки kubelet, сводку конвейера) и возвращают текст карточки.
-Ввод-вывод (обращения к Kubernetes, RCA и привилегированному слою api) живёт в
-commands.py, поэтому формирование проверяется модульными тестами на подставных данных.
+"""Домен-нейтральные статусные сводки кластера для дежурного оператора kube-sentinel.
+
+Модуль сознательно чист: все функции принимают уже собранные данные (списки подов, узлов,
+деплойментов, событий, сводки kubelet, срок сертификата TLS, состояние агента) и возвращают текст
+карточки. Ввод-вывод (обращения к Kubernetes, RCA и прикладному адаптеру) собирает вызывающая
+сторона, поэтому формирование карточек проверяется модульными тестами на подставных данных.
+
+Сводки описывают состояние произвольного кластера Kubernetes нейтрально: поды по фазам, узлы с
+ресурсами, деплойменты со статусом реплик, свежие предупреждающие события. Здесь нет ни имён
+приложения владельца, ни зашитых имён узлов и сервисов, ни привязки к какому-либо конкретному
+конвейеру обработки.
 """
 from __future__ import annotations
 
@@ -69,9 +75,9 @@ def _gib(b) -> str:
 
 
 def node_usage(node_info: dict, summary) -> dict:
-    """Использование узла из сводки kubelet и ёмкостей узла: проценты процессора и
-    памяти, файловые системы (корневая и образов) с процентами. summary=None означает,
-    что kubelet узла недоступен (сам по себе диагностический признак)."""
+    """Использование узла из сводки kubelet и ёмкостей узла: проценты процессора и памяти, файловые
+    системы с процентами. summary=None означает, что kubelet узла недоступен (сам по себе
+    диагностический признак)."""
     out = {"name": node_info.get("name", ""), "ready": bool(node_info.get("ready")),
            "memory_pressure": bool(node_info.get("memory_pressure")),
            "disk_pressure": bool(node_info.get("disk_pressure")),
@@ -120,6 +126,16 @@ def top_pods_by_memory(summary, n: int = 5) -> list:
     return [(name, _gib(ws)) for name, ws in rows[:n]]
 
 
+def pods_by_phase(pods) -> dict:
+    """Счётчики подов по фазам Kubernetes (Running, Pending, Succeeded, Failed и прочее). Возвращает
+    словарь фаза: число."""
+    counts: dict = {}
+    for p in pods or []:
+        phase = p.get("phase") or "Unknown"
+        counts[phase] = counts.get(phase, 0) + 1
+    return counts
+
+
 def problem_pods(pods, now: datetime) -> tuple:
     """Разделяет поды на «не в Running» и «рестартовали за последний час». Возвращает
     (not_running, restarted_hour): списки словарей подов."""
@@ -143,23 +159,11 @@ def problem_pods(pods, now: datetime) -> tuple:
     return not_running, restarted
 
 
-def error_share(facts: dict) -> list:
-    """Доля ошибок по сервисам из фактов RCA (by_service и by_service_errors):
-    список (сервис, ошибок, всего, процент), только сервисы с ошибками, по убыванию."""
-    f = facts or {}
-    total = f.get("by_service") or {}
-    errs = f.get("by_service_errors") or {}
-    rows = [(svc, n, total.get(svc, 0), pct(n, total.get(svc, 0)))
-            for svc, n in errs.items() if n]
-    rows.sort(key=lambda x: (-x[3], -x[1]))
-    return rows
-
-
 # ---------------------------------------------------------------------------
 # Карточки.
 # ---------------------------------------------------------------------------
 
-_UNAVAILABLE = "недоступно (панель вне кластера)"
+_UNAVAILABLE = "недоступно (нет доступа к API Kubernetes)"
 
 
 def _fmt_node_line(u: dict) -> str:
@@ -189,36 +193,36 @@ def _fmt_age(seconds) -> str:
     return f"{s // 3600} ч {(s % 3600) // 60} мин"
 
 
-def build_status_card(nodes, pods, stats_by_node, overview, rca_facts,
-                      tls_days, gpu_node: str, now: datetime | None = None) -> str:
-    """Сводная карточка /status: одна страница для мгновенной оценки состояния."""
+def build_status_card(nodes, pods, stats_by_node, deployments, events,
+                      tls_days, now: datetime | None = None) -> str:
+    """Сводная карточка состояния кластера: одна страница для мгновенной оценки. Домен-нейтральна:
+    узлы с ресурсами, поды по фазам и проблемные поды, деплойменты со статусом реплик, свежие
+    предупреждающие события, срок сертификата TLS (если задан хост наблюдения)."""
     now = now or datetime.now(timezone.utc)
     lines = ["Сводка кластера:"]
 
     # Узлы: готовность, давления, проценты процессора, памяти и корневого диска.
+    lines.append("Узлы:")
     if nodes is None:
-        lines.append(f"  узлы: {_UNAVAILABLE}")
+        lines.append(f"  {_UNAVAILABLE}")
+    elif not nodes:
+        lines.append("  узлов не видно")
     else:
         for n in nodes:
             lines.append(_fmt_node_line(node_usage(n, (stats_by_node or {}).get(n["name"]))))
-        # Доступность GPU-узла (туннель WireGuard): узел за туннелем считается
-        # доступным, когда он Ready и его kubelet отвечает на запрос сводки.
-        gn = next((n for n in nodes if n["name"] == gpu_node), None)
-        if gn is None:
-            lines.append(f"  GPU-узел «{gpu_node}»: не найден в кластере")
-        elif gn["ready"] and (stats_by_node or {}).get(gpu_node) is not None:
-            lines.append(f"  GPU-узел «{gpu_node}»: доступен, туннель работает")
-        else:
-            lines.append(f"  GPU-узел «{gpu_node}»: НЕДОСТУПЕН (узел или туннель)")
 
-    # Проблемные поды.
+    # Поды: разбивка по фазам и проблемные поды.
     lines.append("Поды:")
     if pods is None:
         lines.append(f"  {_UNAVAILABLE}")
     else:
+        counts = pods_by_phase(pods)
+        if counts:
+            summary = ", ".join(f"{phase} {counts[phase]}" for phase in sorted(counts))
+            lines.append(f"  по фазам: {summary}")
         bad, restarted = problem_pods(pods, now)
         if not bad and not restarted:
-            lines.append("  все поды в Running, рестартов за час нет")
+            lines.append("  проблемных подов нет, рестартов за час нет")
         for p in bad:
             reason = p.get("waiting_reason") or p.get("phase")
             oom = ", ранее OOMKilled" if p.get("oom_killed") else ""
@@ -226,48 +230,39 @@ def build_status_card(nodes, pods, stats_by_node, overview, rca_facts,
         for p in restarted:
             lines.append(f"  ~ {p['name']}: рестарт за последний час (всего {p['restarts']})")
 
-    # Конвейер по сводке /api/admin/overview.
-    lines.append("Конвейер:")
-    if overview is None:
-        lines.append("  сводка api недоступна (нет токена или api не отвечает)")
+    # Деплойменты: недоступные реплики.
+    lines.append("Деплойменты:")
+    if deployments is None:
+        lines.append(f"  {_UNAVAILABLE}")
     else:
-        q = overview.get("queue", {}) or {}
-        by = q.get("by_status", {}) or {}
-        depth = sum(by.values())
-        lines.append(f"  в работе и ожидании {depth} заданий "
-                     f"(обрабатывается {q.get('processing', 0)}, "
-                     f"ожидает {by.get('queued', 0)})")
-        if by.get("queued"):
-            lines.append(f"  старейшее ожидающее: {_fmt_age(q.get('oldest_waiting_seconds'))}")
-        d = overview.get("last_24h", {}) or {}
-        lines.append(f"  за сутки: создано {d.get('created', 0)}, готово {d.get('done', 0)}, "
-                     f"ошибок {d.get('errors', 0)}")
-        live = overview.get("live", {}) or {}
-        lines.append(f"  живой режим: {live.get('active', 0)} из {live.get('capacity', 0)} сессий "
-                     f"({pct(live.get('active'), live.get('capacity'))}%)")
+        degraded = [d for d in deployments if (d.get("desired") or 0) > (d.get("ready") or 0)]
+        if not degraded:
+            lines.append("  все деплойменты в полном составе реплик")
+        for d in degraded:
+            lines.append(f"  ! {d.get('name')}: готово {d.get('ready', 0)} из {d.get('desired', 0)}")
 
-    # Доля ошибок в логах за 15 минут по фактам RCA.
-    lines.append("Ошибки в логах за 15 минут:")
-    if rca_facts is None:
-        lines.append("  RCA недоступен")
+    # Свежие предупреждающие события кластера.
+    lines.append("Предупреждающие события:")
+    if events is None:
+        lines.append(f"  {_UNAVAILABLE}")
     else:
-        rows = error_share(rca_facts)
-        if not rows:
-            lines.append("  ошибок нет")
-        for svc, n, total, share in rows[:6]:
-            lines.append(f"  {svc}: {n} из {total} строк ({share}%)")
+        warns = [e for e in events if e.get("type") == "Warning"]
+        if not warns:
+            lines.append("  предупреждающих событий нет")
+        for e in warns[:6]:
+            obj = e.get("object") or ""
+            lines.append(f"  {e.get('reason')} [{obj}] x{e.get('count', 1)}: {e.get('message', '')}")
 
-    # Срок TLS-сертификата (проверка раз в сутки, значение из кэша).
+    # Срок TLS-сертификата (проверка раз в сутки, значение из кэша app_adapter). Показывается только
+    # когда задан хост наблюдения SENTINEL_TLS_HOST, иначе строки нет.
     if tls_days is not None:
         mark = "!" if tls_days <= 14 else "ok"
-        lines.append(f"Сертификат TLS krokki.ru: осталось {tls_days} дн. [{mark}]")
-    else:
-        lines.append("Сертификат TLS krokki.ru: проверка недоступна")
+        lines.append(f"Сертификат TLS: осталось {tls_days} сут [{mark}]")
     return "\n".join(lines)
 
 
 def build_hw_card(nodes, stats_by_node) -> str:
-    """Подробная карточка /hw: железо по узлам и файловым системам."""
+    """Подробная карточка железа: узлы, ресурсы и файловые системы. Домен-нейтральна."""
     if nodes is None:
         return f"Железо: {_UNAVAILABLE}."
     lines = ["Железо по узлам:"]
@@ -292,53 +287,27 @@ def build_hw_card(nodes, stats_by_node) -> str:
                 lines.append("  крупнейшие по памяти поды: "
                              + ", ".join(f"{name} ({gib} ГиБ)" for name, gib in top))
         else:
-            lines.append("  сводка kubelet недоступна (узел или туннель)")
-    return "\n".join(lines)
-
-
-def build_queue_card(overview) -> str:
-    """Карточка /queue: очередь по стадиям, темп за час и прогноз разгребания."""
-    if overview is None:
-        return "Очередь: сводка api недоступна (нет токена или api не отвечает)."
-    q = overview.get("queue", {}) or {}
-    by = q.get("by_status", {}) or {}
-    lines = ["Конвейер обработки:"]
-    if not by:
-        lines.append("  очередь пуста, все задания в терминальных статусах")
-    for st in sorted(by, key=lambda s: -by[s]):
-        lines.append(f"  {st}: {by[st]}")
-    if by.get("queued"):
-        lines.append(f"  старейшее ожидающее: {_fmt_age(q.get('oldest_waiting_seconds'))}")
-    done_hour = (overview.get("last_hour", {}) or {}).get("done", 0)
-    lines.append(f"Темп: за последний час готово {done_hour} заданий.")
-    waiting = by.get("queued", 0) + by.get("uploaded", 0)
-    if waiting and done_hour:
-        eta_min = int(round(60.0 * waiting / done_hour))
-        lines.append(f"Прогноз: при текущем темпе очередь из {waiting} ожидающих "
-                     f"разгребётся примерно за {_fmt_age(eta_min * 60)}.")
-    elif waiting:
-        lines.append(f"Прогноз: ожидает {waiting}, но за час не завершилось ни одного "
-                     f"задания; при простое воркера очередь не разгребается.")
-    d = overview.get("last_24h", {}) or {}
-    lines.append(f"За сутки: создано {d.get('created', 0)}, готово {d.get('done', 0)}, "
-                 f"ошибок {d.get('errors', 0)}.")
+            lines.append("  сводка kubelet недоступна")
     return "\n".join(lines)
 
 
 def build_agent_card(state: dict) -> str:
-    """Карточка /agent (ADR-0038, этап 3): режим, остаток бюджета действий на час,
-    активные кулдауны, последние 10 действий с исходами и положение предохранителя.
-    Чистая функция: состояние собирает autopilot.agent_state()."""
+    """Карточка состояния автономного агента: уровень автономии, остаток бюджета действий на час,
+    активные кулдауны, положение предохранителя и последние действия. Чистая функция: состояние
+    собирает autopilot.agent_state()."""
     s = state or {}
-    if not s.get("autonomous"):
-        mode = "сухой прогон (AGENT_AUTONOMOUS=0): агент записывает, что бы сделал"
-    elif s.get("paused"):
-        mode = "пауза (/agent pause): действия остановлены, наблюдение работает"
-    else:
-        mode = "автономный: действия уровня A исполняются"
+    autonomy = s.get("autonomy") or "observe"
+    mode = {
+        "observe": "наблюдение (observe): агент диагностирует и предлагает, но не действует",
+        "safe_repair": "безопасный ремонт (safe_repair): агент автономно чинит обратимым, опасное на "
+                       "подтверждение",
+        "full": "полная автономия (full): агент чинит всё, кроме необратимого и защищённого",
+    }.get(autonomy, autonomy)
+    if s.get("blind"):
+        mode += "; ИСТОЧНИКИ НАБЛЮДЕНИЯ НЕДОСТУПНЫ (агент не видит состояние кластера)"
     lines = [
         "Автономный агент:",
-        f"  режим: {mode}",
+        f"  уровень автономии: {mode}",
         f"  такт наблюдения: {s.get('tick_seconds')} с, проверка результата через "
         f"{s.get('verify_delay')} с",
         f"  бюджет действий: осталось {s.get('budget_left')} из {s.get('budget_total')} в час",
@@ -363,22 +332,21 @@ def build_agent_card(state: dict) -> str:
         when = datetime.fromtimestamp(a.get("ts") or 0, tz=timezone.utc).strftime("%m-%d %H:%M")
         svc = f" ({a['service']})" if a.get("service") else ""
         lines.append(f"  {when} {a.get('action')}{svc}: {a.get('outcome')}")
-    lines.append("Управление: /agent pause приостанавливает действия, /agent resume "
-                 "возобновляет. Наблюдение и эскалации работают всегда.")
+    lines.append("Управление: уровень автономии выбирает владелец из интерфейса. Наблюдение и "
+                 "эскалации работают всегда.")
     return "\n".join(lines)
 
 
 def build_report_card(groups, guard_state, now: datetime | None = None,
                       window_hours: int = 24) -> str:
-    """Карточка отчёта агента за сутки (ADR-0038, этап 5, команда /report). Чистая
-    функция: сводит по группам инцидентов за окно (жизненный цикл) и по журналу действий
-    гардов (виды действий, исходы, положение предохранителя и бюджета). groups это
-    incidents.list_groups(), guard_state это guards.state_summary(). Формат компактной
-    русской карточкой.
+    """Карточка отчёта агента за окно (по умолчанию сутки). Чистая функция: сводит по группам
+    инцидентов за окно (жизненный цикл) и по журналу действий гардов (виды действий, исходы,
+    положение предохранителя и бюджета). groups это incidents.list_groups(), guard_state это
+    guards.state_summary(). Домен-нейтральна.
 
     За окно берётся группа, у которой последнее появление (last_seen) попало в последние
-    window_hours; повторно открытые группы (reopened_from) считаются отдельно как признак
-    хронических проблем."""
+    window_hours; повторно открытые группы (reopened_from) считаются отдельно как признак хронических
+    проблем."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=window_hours)
 
@@ -398,10 +366,8 @@ def build_report_card(groups, guard_state, now: datetime | None = None,
     acknowledged = sum(1 for g in recent if g.get("lifecycle") == "acknowledged")
     reopened = sum(1 for g in recent if g.get("reopened_from"))
 
-    # Топ повторяющихся отпечатков за окно: по счётчику повторов внутри группы.
     top = sorted(recent, key=lambda g: -(g.get("count") or 0))[:3]
 
-    # Действия по видам и исходам из журнала гардов (последние действия карточки /agent).
     by_action: dict = {}
     for a in (guard_state or {}).get("last_actions") or []:
         act = a.get("action") or "?"

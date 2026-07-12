@@ -15,6 +15,15 @@ resolved_operator (оператор устранил кнопкой «Решит
 Хранилище append-only JSONL, нарезанное помесячно (incidents-YYYY-MM.log.jsonl), чтобы один
 файл не рос бесконечно. При старте лента восстанавливается повтором событий из всех файлов;
 для совместимости сначала читается старый единый файл incidents.log.jsonl, если он есть.
+
+Хранилище и разделяемое состояние потокобезопасны. Автопилот работает в отдельном потоке
+параллельно обработчикам FastAPI, поэтому дозапись в файл и любое изменение разделяемых словарей
+групп выполняются под единственной реентерабельной блокировкой _LOCK. Без неё конкурентные
+upsert из такта агента и из обработчика теряли бы данные и перемешивали строки в журнале.
+
+Каталог журнала выносится за пределы рабочего дерева агента на постоянный том (по умолчанию
+каталог данных SENTINEL_STATE_DIR, обычно /data; конкретные пути переопределяются переменными
+SENTINEL_INCIDENTS и SENTINEL_INCIDENTS_DIR).
 """
 from __future__ import annotations
 
@@ -22,14 +31,29 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
+
+def _state_dir() -> Path:
+    """Каталог данных вне рабочего дерева. По умолчанию /data (постоянный том), переопределяется
+    переменной SENTINEL_STATE_DIR."""
+    return Path(os.getenv("SENTINEL_STATE_DIR", "/data"))
+
+
 # Старый единый журнал (совместимость): читается при старте, если существует. Новые события
-# в него не пишутся.
-STORE_PATH = Path(os.getenv("ADMINCHAT_INCIDENTS", str(Path(__file__).parent / "incidents.log.jsonl")))
-# Каталог помесячных журналов. По умолчанию рядом со старым файлом.
-STORE_DIR = Path(os.getenv("ADMINCHAT_INCIDENTS_DIR", str(STORE_PATH.parent)))
+# в него не пишутся. Явный SENTINEL_INCIDENTS имеет приоритет, иначе файл в каталоге данных.
+STORE_PATH = Path(os.getenv("SENTINEL_INCIDENTS") or str(_state_dir() / "incidents.log.jsonl"))
+# Каталог помесячных журналов. Явный SENTINEL_INCIDENTS_DIR имеет приоритет, иначе каталог
+# рядом со старым единым файлом.
+STORE_DIR = Path(os.getenv("SENTINEL_INCIDENTS_DIR") or str(STORE_PATH.parent))
+
+# Реентерабельная блокировка на весь модуль: сериализует изменение разделяемых словарей групп и
+# дозапись в журнал между потоком автопилота и обработчиками FastAPI. Реентерабельность нужна,
+# потому что публичные функции вызывают друг друга под уже взятой блокировкой (например,
+# purge_noise вызывает set_lifecycle).
+_LOCK = threading.RLock()
 
 # Статусы жизненного цикла группы (ADR-0038, раздел 3 спецификации).
 LIFECYCLES = ("new", "auto_fixing", "resolved_auto", "resolved_operator",
@@ -66,6 +90,8 @@ def _month_path(ts: str) -> Path:
 
 
 def _append(rec: dict) -> None:
+    """Дозапись события в помесячный журнал. Вызывается только под _LOCK, поэтому конкурентные
+    записи из разных потоков не перемешивают строки."""
     STORE_DIR.mkdir(parents=True, exist_ok=True)
     with _month_path(rec["ts"]).open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -84,7 +110,7 @@ def _apply(verdict: dict, ts: str) -> tuple:
         # (защита от совпадения миллисекунды). Переоткрытая группа получает свой номер INC,
         # старая остаётся в истории. При повторе журнала порядок тот же, номера те же.
         seed = f"{key}|{ts}|{len(_groups)}"
-        gid = "INC-" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8].upper()
+        gid = "INC-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8].upper()
         g = {
             "key": key,
             "id": gid,
@@ -134,25 +160,28 @@ def _apply_lifecycle(rec: dict) -> None:
 
 def upsert(verdict: dict) -> tuple:
     """Регистрирует инцидент и пишет событие в помесячный журнал.
-    Возвращает (идентификатор группы, новая ли группа)."""
-    ts = _now()
-    gid, new = _apply(verdict, ts)
-    _append({"ts": ts, "verdict": verdict})
-    return gid, new
+    Возвращает (идентификатор группы, новая ли группа). Всё под блокировкой: изменение
+    разделяемых словарей групп и дозапись в файл атомарны относительно других потоков."""
+    with _LOCK:
+        ts = _now()
+        gid, new = _apply(verdict, ts)
+        _append({"ts": ts, "verdict": verdict})
+        return gid, new
 
 
 def set_lifecycle(ident: str, lifecycle: str, by: str | None = None,
                   action: str | None = None) -> dict | None:
     """Переводит группу в новый статус жизненного цикла и пишет событие в журнал.
     ident принимает идентификатор группы (INC-...) или ключ отпечатка."""
-    g = get_group(ident)
-    if not g or lifecycle not in LIFECYCLES:
-        return None
-    rec = {"ts": _now(), "event": "lifecycle", "id": g["id"], "lifecycle": lifecycle,
-           "by": by, "action": action}
-    _apply_lifecycle(rec)
-    _append(rec)
-    return g
+    with _LOCK:
+        g = get_group(ident)
+        if not g or lifecycle not in LIFECYCLES:
+            return None
+        rec = {"ts": _now(), "event": "lifecycle", "id": g["id"], "lifecycle": lifecycle,
+               "by": by, "action": action}
+        _apply_lifecycle(rec)
+        _append(rec)
+        return g
 
 
 def acknowledge(ident: str, operator: str) -> dict | None:
@@ -180,13 +209,14 @@ def add_note(ident: str, by: str, text: str) -> dict | None:
     """Системная запись в карточке группы (ADR-0038, этап 3): агент фиксирует, что
     заметил, что сделал (или что БЫ сделал в сухом прогоне) и чем кончилось. Запись
     append-only в тот же помесячный журнал, переживает перезапуск."""
-    g = get_group(ident)
-    if not g:
-        return None
-    rec = {"ts": _now(), "event": "note", "id": g["id"], "by": by, "text": text}
-    _apply_note(rec)
-    _append(rec)
-    return g
+    with _LOCK:
+        g = get_group(ident)
+        if not g:
+            return None
+        rec = {"ts": _now(), "event": "note", "id": g["id"], "by": by, "text": text}
+        _apply_note(rec)
+        _append(rec)
+        return g
 
 
 def _replay_line(line: str) -> None:
@@ -208,16 +238,18 @@ def _replay_line(line: str) -> None:
 def load() -> None:
     """Восстанавливает ленту при старте повтором событий без повторной записи: сначала
     старый единый файл (совместимость), затем все помесячные файлы в хронологическом
-    порядке имён."""
-    _groups.clear()
-    _active.clear()
-    if STORE_PATH.exists():
-        for line in STORE_PATH.read_text(encoding="utf-8").splitlines():
-            _replay_line(line)
-    if STORE_DIR.exists():
-        for p in sorted(STORE_DIR.glob("incidents-????-??.log.jsonl")):
-            for line in p.read_text(encoding="utf-8").splitlines():
+    порядке имён. Под блокировкой, чтобы восстановление не пересекалось с записью из другого
+    потока."""
+    with _LOCK:
+        _groups.clear()
+        _active.clear()
+        if STORE_PATH.exists():
+            for line in STORE_PATH.read_text(encoding="utf-8").splitlines():
                 _replay_line(line)
+        if STORE_DIR.exists():
+            for p in sorted(STORE_DIR.glob("incidents-????-??.log.jsonl")):
+                for line in p.read_text(encoding="utf-8").splitlines():
+                    _replay_line(line)
 
 
 # Детекторы подтверждённого сигнала (не шум): сетевой сбой, всплеск ошибок и 5xx, радиус
@@ -225,16 +257,17 @@ def load() -> None:
 _SIGNAL_DETECTORS = {"D1", "D5", "D10", "D11"}
 
 
-def _affected_tenants(verdict: dict) -> list:
-    """Затронутые тенанты из вердикта группы (разные схемы вердиктов кладут их под разными
-    ключами). Пустой список означает, что инцидент не задел ни одного клиента."""
+def _affected_scope(verdict: dict) -> list:
+    """Затронутые цели из вердикта группы: сервисы, поды, рабочие нагрузки, которых коснулся
+    инцидент. Разные схемы вердиктов кладут их под разными ключами. Пустой список означает, что
+    инцидент не задел ни одной наблюдаемой цели, а значит с большой вероятностью это шум."""
     v = verdict or {}
-    for key in ("affected_tenants", "tenants", "affected"):
+    for key in ("affected", "affected_targets", "targets", "impacted"):
         val = v.get(key)
         if isinstance(val, (list, tuple)):
             return list(val)
     params = v.get("params") or {}
-    for key in ("affected_tenants", "tenants"):
+    for key in ("affected", "affected_targets", "targets"):
         val = params.get(key)
         if isinstance(val, (list, tuple)):
             return list(val)
@@ -242,17 +275,17 @@ def _affected_tenants(verdict: dict) -> list:
 
 
 def is_noise(g: dict) -> bool:
-    """Эвристика шума (ADR-0041, раздел 7): группа считается шумовой, если её полоса
-    уверенности пуста или low, ни один тенант не затронут, а сработавшие детекторы не несут
-    подтверждённого сигнала (только уровня note: структурные и демпферы, без сети, всплесков
-    ошибок и радиуса влияния). Уже решённые и взятые в работу группы не трогаем."""
+    """Эвристика шума: группа считается шумовой, если её полоса уверенности пуста или low, ни
+    одна цель не затронута, а сработавшие детекторы не несут подтверждённого сигнала (только
+    уровня note: структурные и демпферы, без сети, всплесков ошибок и радиуса влияния). Уже
+    решённые и взятые в работу группы не трогаем."""
     if g.get("lifecycle") in RESOLVED or g.get("lifecycle") == "acknowledged":
         return False
     band = (g.get("band") or "")
     if band not in ("", "low"):
         return False
     v = g.get("last_verdict") or {}
-    if _affected_tenants(v):
+    if _affected_scope(v):
         return False
     dets = set(g.get("detectors") or v.get("detectors") or [])
     if dets & _SIGNAL_DETECTORS:
@@ -261,17 +294,18 @@ def is_noise(g: dict) -> bool:
 
 
 def purge_noise(operator: str = "operator") -> dict:
-    """Помечает шумовые группы разрешёнными по эвристике is_noise (ADR-0041, раздел 7). Это
-    ручная очистка ленты: нормальные состояния и слабые сигналы, попавшие инцидентами до
-    поднятия порога, закрываются как resolved_operator с пометкой действия purge_noise, чтобы
-    история осталась честной. Возвращает число помеченных групп и их идентификаторы."""
-    purged = []
-    for g in list(_groups.values()):
-        if is_noise(g):
-            set_lifecycle(g["id"], "resolved_operator", by=operator, action="purge_noise")
-            g["unread"] = False
-            purged.append(g["id"])
-    return {"purged": len(purged), "ids": purged}
+    """Помечает шумовые группы разрешёнными по эвристике is_noise. Это ручная очистка ленты:
+    нормальные состояния и слабые сигналы, попавшие инцидентами до поднятия порога, закрываются
+    как resolved_operator с пометкой действия purge_noise, чтобы история осталась честной.
+    Возвращает число помеченных групп и их идентификаторы."""
+    with _LOCK:
+        purged = []
+        for g in list(_groups.values()):
+            if is_noise(g):
+                set_lifecycle(g["id"], "resolved_operator", by=operator, action="purge_noise")
+                g["unread"] = False
+                purged.append(g["id"])
+        return {"purged": len(purged), "ids": purged}
 
 
 def _public(g: dict) -> dict:
@@ -284,24 +318,32 @@ def _public(g: dict) -> dict:
 
 def list_groups() -> list:
     """Группы инцидентов, свежие сверху, с полями жизненного цикла и днём."""
-    return [_public(g) for g in sorted(_groups.values(),
-                                       key=lambda g: g["last_seen"], reverse=True)]
+    with _LOCK:
+        return [_public(g) for g in sorted(_groups.values(),
+                                           key=lambda g: g["last_seen"], reverse=True)]
 
 
 def get_group(ident: str) -> dict | None:
     """Группа по идентификатору INC-... либо по ключу отпечатка (актуальная группа)."""
-    g = _groups.get(ident)
-    if g:
-        return g
-    gid = _active.get(ident)
-    return _groups.get(gid) if gid else None
+    with _LOCK:
+        g = _groups.get(ident)
+        if g:
+            return g
+        gid = _active.get(ident)
+        return _groups.get(gid) if gid else None
 
 
 def unread_count() -> int:
-    return sum(1 for g in _groups.values() if g.get("unread"))
+    with _LOCK:
+        return sum(1 for g in _groups.values() if g.get("unread"))
 
 
 def mark_read(ident: str | None = None) -> None:
+    with _LOCK:
+        _mark_read_locked(ident)
+
+
+def _mark_read_locked(ident: str | None) -> None:
     if ident is None:
         for g in _groups.values():
             g["unread"] = False

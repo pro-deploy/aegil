@@ -27,6 +27,22 @@ def stuck(rca_url: str) -> dict:
         return r.json()
 
 
+def record_outcome(rca_url: str, payload: dict) -> bool:
+    """Отправляет исход ремонта в сервис RCA (POST /outcome), замыкая контур активного обучения
+    на фактических результатах устранения инцидентов. Возвращает True при успешной записи.
+
+    Вызов best-effort и мягко деградирует: при недоступности сервиса RCA, таймауте, ошибочном
+    коде состояния или любом сбое транспорта возвращает False, не бросая исключение, чтобы
+    точка разрешения инцидента в панели не падала из-за недоступности контура обучения."""
+    try:
+        with httpx.Client(timeout=10.0) as c:
+            r = c.post(f"{rca_url.rstrip('/')}/outcome", json=payload)
+            r.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
 def verdict_payload(out: dict) -> dict:
     """Структурированный вердикт для карточки панели плюс краткая речевая сводка speech."""
     v = out.get("verdict", {}) or {}
@@ -51,6 +67,7 @@ def verdict_payload(out: dict) -> dict:
         "evidence": evidence,
         "report": rep.get("report"),
         "lines": f.get("total_lines"),
+        "error_rate": f.get("error_rate"),
         "detectors": v.get("detectors") or [],
         "speech": " ".join(speech),
     }
