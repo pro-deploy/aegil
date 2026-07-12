@@ -2,164 +2,210 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>kube-sentinel · операторская консоль</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0e1417">
+<title>kube-sentinel</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
 <style>
-:root{
-  --bg:#0b0f14; --panel:#12181f; --panel2:#171f28; --panel3:#1c2530;
-  --border:#232d38; --border2:#2d3a48;
-  --text:#d6dee8; --muted:#8592a3; --dim:#5b6875;
-  --blue:#4c8dff; --green:#3fb950; --amber:#d6a01a; --red:#f0603a; --violet:#a371f7;
-  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  --r:9px;
+:root, [data-theme="light"]{
+  --bg:oklch(0.975 0.003 255); --surface:oklch(1 0 0); --surface-2:oklch(0.965 0.004 255);
+  --ink:oklch(0.20 0.008 265); --muted:oklch(0.52 0.012 265); --subtle:oklch(0.64 0.01 265);
+  --border:oklch(0.92 0.004 265); --border-2:oklch(0.95 0.003 265);
+  --accent:oklch(0.58 0.16 250); --on-accent:oklch(0.99 0 0);
+  --success:oklch(0.60 0.15 152); --success-bg:oklch(0.95 0.05 155);
+  --warning:oklch(0.60 0.13 65); --warning-bg:oklch(0.96 0.06 75);
+  --danger:oklch(0.57 0.20 25); --danger-bg:oklch(0.95 0.05 25);
+  --shadow-1:0 2px 8px oklch(0.5 0.02 265/0.06); --shadow-2:0 16px 40px oklch(0.45 0.03 265/0.16);
 }
-*{box-sizing:border-box}
+[data-theme="dark"]{
+  --bg:oklch(0.17 0.006 265); --surface:oklch(0.215 0.008 265); --surface-2:oklch(0.26 0.01 265);
+  --ink:oklch(0.96 0.004 265); --muted:oklch(0.70 0.01 265); --subtle:oklch(0.58 0.01 265);
+  --border:oklch(0.31 0.01 265); --border-2:oklch(0.26 0.008 265);
+  --accent:oklch(0.72 0.14 250); --on-accent:oklch(0.16 0.01 265);
+  --success:oklch(0.76 0.15 152); --success-bg:oklch(0.34 0.09 155/0.4);
+  --warning:oklch(0.80 0.13 75); --warning-bg:oklch(0.36 0.09 75/0.4);
+  --danger:oklch(0.72 0.17 25); --danger-bg:oklch(0.36 0.10 25/0.4);
+  --shadow-1:0 2px 8px oklch(0 0 0/0.3); --shadow-2:0 16px 40px oklch(0 0 0/0.5);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%}
-body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
-  font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased;overflow:hidden}
-button{font-family:inherit;cursor:pointer}
-::-webkit-scrollbar{width:10px;height:10px}
-::-webkit-scrollbar-thumb{background:#2b3742;border-radius:6px}
-::-webkit-scrollbar-track{background:transparent}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Onest",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased;
+  overscroll-behavior-y:none}
+button{font-family:inherit;cursor:pointer;border:0;background:none;color:inherit}
+.mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+::-webkit-scrollbar{width:0;height:0}
 
-#gate{position:fixed;inset:0;background:radial-gradient(1200px 600px at 50% -10%,#132030,#0b0f14);
-  display:flex;align-items:center;justify-content:center;z-index:50}
-#gate .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;
-  padding:30px 28px;width:min(400px,92vw);box-shadow:0 24px 60px #0009}
-#gate h1{font-size:19px;margin:0 0 4px;letter-spacing:.3px}
-#gate p{color:var(--muted);margin:0 0 20px;font-size:13px}
-#gate label{display:block;font-size:12px;color:var(--muted);margin:0 0 6px}
-#gate input{width:100%;background:var(--panel3);border:1px solid var(--border2);color:var(--text);
-  border-radius:9px;padding:11px 13px;font-family:var(--mono);font-size:14px;outline:none}
-#gate input:focus{border-color:var(--blue)}
-#gate button{margin-top:16px;width:100%;background:var(--blue);color:#04101f;border:0;
-  border-radius:9px;padding:11px;font-weight:650;font-size:14px}
-#gate .err{color:var(--red);font-size:12px;margin-top:10px;min-height:16px}
-.brandmark{display:inline-flex;align-items:center;gap:9px;margin-bottom:14px}
-.brandmark .dot{width:11px;height:11px;border-radius:50%;background:var(--green);
-  box-shadow:0 0 0 4px #3fb95022}
+/* ---------- вход ---------- */
+#gate{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;
+  padding:24px;background:var(--bg)}
+#gate .card{background:var(--surface);border:1px solid var(--border);border-radius:22px;
+  padding:28px 24px;width:100%;max-width:400px;box-shadow:var(--shadow-2)}
+#gate .logo{width:52px;height:52px;border-radius:16px;background:var(--accent);color:var(--on-accent);
+  display:flex;align-items:center;justify-content:center;font-size:26px;margin-bottom:18px}
+#gate h1{font-size:22px;margin:0 0 4px;font-weight:700;letter-spacing:-.3px}
+#gate p{color:var(--muted);margin:0 0 22px;font-size:14px}
+#gate input{width:100%;background:var(--surface-2);border:1px solid var(--border);color:var(--ink);
+  border-radius:14px;padding:15px 16px;font-size:16px;outline:none}
+#gate input:focus{border-color:var(--accent)}
+#gate button{margin-top:16px;width:100%;background:var(--accent);color:var(--on-accent);
+  border-radius:14px;padding:15px;font-weight:650;font-size:16px}
+#gate .err{color:var(--danger);font-size:13px;margin-top:12px;min-height:18px}
 
-#app{display:none;grid-template-rows:auto 1fr;height:100%}
-header{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);
-  border-bottom:1px solid var(--border);flex-wrap:wrap}
-header .brand{display:flex;align-items:center;gap:9px;font-weight:650;letter-spacing:.3px}
-header .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--green)}
-.chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel3);
-  border:1px solid var(--border);border-radius:20px;padding:4px 11px;font-size:12px;color:var(--muted)}
-.chip b{color:var(--text);font-weight:600}
-header .spacer{flex:1}
-select{background:var(--panel3);border:1px solid var(--border2);color:var(--text);
-  border-radius:8px;padding:6px 10px;font-size:12.5px;outline:none}
-select:focus{border-color:var(--blue)}
-.pulse{width:8px;height:8px;border-radius:50%;background:var(--green);transition:background .3s}
-.pulse.bad{background:var(--red)}
-header .ghost{background:transparent;border:1px solid var(--border2);color:var(--muted);
-  border-radius:8px;padding:6px 11px;font-size:12.5px}
-header .ghost:hover{color:var(--text)}
+/* ---------- каркас приложения ---------- */
+#app{display:none;flex-direction:column;min-height:100%;max-width:560px;margin:0 auto}
+.appbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:12px;
+  padding:calc(env(safe-area-inset-top) + 12px) 18px 12px;background:var(--bg)}
+.appbar .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:17px;letter-spacing:-.3px}
+.appbar .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--success)}
+.appbar .brand .dot.bad{background:var(--danger)}
+.appbar .sp{flex:1}
+.iconbtn{width:40px;height:40px;border-radius:12px;background:var(--surface);border:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--muted)}
+main{flex:1;padding:4px 16px calc(env(safe-area-inset-bottom) + 120px)}
 
-main{display:grid;grid-template-columns:1.35fr .9fr;gap:12px;padding:12px;min-height:0;overflow:hidden}
-@media(max-width:940px){main{grid-template-columns:1fr;overflow:auto}}
-.col{display:flex;flex-direction:column;gap:12px;min-height:0}
-.left{overflow:hidden}
-.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);
-  display:flex;flex-direction:column;min-height:0}
-.panel>.head{display:flex;align-items:center;gap:9px;padding:11px 14px;border-bottom:1px solid var(--border)}
-.panel>.head h2{font-size:13px;margin:0;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--muted)}
-.panel>.head .count{font-size:12px;color:var(--dim);font-family:var(--mono)}
-.panel>.head .spacer{flex:1}
-.panel>.body{overflow:auto;padding:10px;min-height:0}
-.left .incidents{flex:1 1 58%}
-.left .cluster{flex:1 1 42%}
+/* ---------- геройская карточка (здоровье + бюджет) ---------- */
+.hero{border-radius:24px;padding:22px;color:#fff;box-shadow:var(--shadow-2);margin:8px 0 16px;
+  background:linear-gradient(150deg, oklch(0.55 0.14 250), oklch(0.45 0.15 265))}
+.hero.ok{background:linear-gradient(150deg, oklch(0.6 0.13 152), oklch(0.5 0.13 160))}
+.hero.warn{background:linear-gradient(150deg, oklch(0.62 0.13 65), oklch(0.55 0.14 45))}
+.hero.crit{background:linear-gradient(150deg, oklch(0.6 0.19 25), oklch(0.5 0.19 15))}
+.hero .label{font-size:13px;opacity:.85;font-weight:500}
+.hero .status{font-size:30px;font-weight:750;letter-spacing:-.5px;margin:2px 0 14px}
+.hero .grid{display:flex;gap:20px}
+.hero .m .v{font-size:20px;font-weight:700}
+.hero .m .k{font-size:11.5px;opacity:.8}
+.hero .bar{height:7px;border-radius:5px;background:rgba(255,255,255,.25);margin-top:14px;overflow:hidden}
+.hero .bar i{display:block;height:100%;background:#fff;border-radius:5px}
 
-.inc{border:1px solid var(--border);border-left:3px solid var(--dim);border-radius:8px;
-  padding:11px 12px;margin-bottom:9px;background:var(--panel2)}
-.inc.high{border-left-color:var(--red)}
-.inc.uncertain{border-left-color:var(--amber)}
-.inc.healthy,.inc.low{border-left-color:var(--green)}
-.inc .top{display:flex;align-items:flex-start;gap:9px}
-.inc .title{font-weight:600;font-size:13.5px;flex:1}
-.badge{font-size:10.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;
-  padding:2px 7px;border-radius:5px;white-space:nowrap}
-.badge.high{background:#f0603a22;color:#ff8a6a}
-.badge.uncertain{background:#d6a01a22;color:#f0c454}
-.badge.low,.badge.healthy{background:#3fb95022;color:#6cd67f}
-.inc .root{color:var(--muted);font-size:12.5px;margin:7px 0 0}
-.inc .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px;align-items:center}
-.tag{font-family:var(--mono);font-size:11px;background:var(--panel3);border:1px solid var(--border2);
-  color:var(--muted);border-radius:5px;padding:1px 7px}
-.inc .when{color:var(--dim);font-size:11px;font-family:var(--mono);margin-left:auto}
-.inc .acts{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap}
-.btn{background:var(--panel3);border:1px solid var(--border2);color:var(--text);border-radius:7px;
-  padding:5px 11px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
-.btn:hover{border-color:var(--blue);color:#fff}
-.btn.warn:hover{border-color:var(--amber)}
-.btn:disabled{opacity:.5;cursor:default}
+/* ---------- плитки ---------- */
+.tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:20px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px 15px;
+  box-shadow:var(--shadow-1)}
+.tile .v{font-size:22px;font-weight:700;letter-spacing:-.3px}
+.tile .v small{font-size:13px;color:var(--muted);font-weight:600}
+.tile .k{font-size:12px;color:var(--muted);margin-top:2px}
+.tile .v.good{color:var(--success)} .tile .v.warn{color:var(--warning)} .tile .v.bad{color:var(--danger)}
 
-.krow{display:grid;grid-template-columns:1fr auto auto auto;gap:10px;align-items:center;
-  padding:7px 6px;border-bottom:1px solid var(--border);font-size:12.5px}
-.krow:last-child{border-bottom:0}
-.krow .nm{font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.st{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:5px;white-space:nowrap}
-.st.ok{background:#3fb95022;color:#6cd67f}
-.st.warn{background:#d6a01a22;color:#f0c454}
-.st.err{background:#f0603a22;color:#ff8a6a}
-.rst{font-family:var(--mono);font-size:11.5px;color:var(--dim);white-space:nowrap}
-.rst.hot{color:#ff8a6a}
-.subhead{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;
-  margin:12px 4px 6px;font-weight:600}
-.drow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;
-  padding:6px;border-bottom:1px solid var(--border);font-size:12.5px}
-.drow .nm{font-family:var(--mono);font-size:12px}
-.rep{font-family:var(--mono);font-size:12px}
-.rep.ok{color:#6cd67f}.rep.bad{color:#ff8a6a}
+/* ---------- секции ---------- */
+.sec{margin-bottom:22px}
+.sec .h{display:flex;align-items:baseline;gap:8px;margin:0 4px 11px}
+.sec .h h2{font-size:16px;font-weight:700;margin:0;letter-spacing:-.3px}
+.sec .h .c{font-size:13px;color:var(--subtle);font-weight:500}
+.sec .h .act{margin-left:auto;font-size:13px;color:var(--accent);font-weight:600}
 
-.assistant{height:100%}
-.chatwrap{flex:1;display:flex;flex-direction:column;min-height:0}
-.msgs{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
-.msg{max-width:92%;padding:10px 13px;border-radius:12px;font-size:13.5px;white-space:pre-wrap;
-  word-wrap:break-word}
-.msg.u{align-self:flex-end;background:var(--blue);color:#04101f;border-bottom-right-radius:4px}
-.msg.a{align-self:flex-start;background:var(--panel3);border:1px solid var(--border);
-  border-bottom-left-radius:4px}
-.msg.sys{align-self:center;color:var(--dim);font-size:12px;background:transparent}
-.typing{align-self:flex-start;color:var(--muted);font-size:13px}
-.chips{display:flex;gap:7px;flex-wrap:wrap;padding:0 14px 10px}
-.qchip{background:var(--panel3);border:1px solid var(--border2);color:var(--muted);border-radius:16px;
-  padding:5px 11px;font-size:11.5px}
-.qchip:hover{color:var(--text);border-color:var(--blue)}
-.composer{display:flex;gap:9px;padding:12px 14px;border-top:1px solid var(--border)}
-.composer textarea{flex:1;resize:none;background:var(--panel3);border:1px solid var(--border2);
-  color:var(--text);border-radius:10px;padding:10px 12px;font-family:var(--sans);font-size:13.5px;
-  outline:none;max-height:120px;min-height:42px}
-.composer textarea:focus{border-color:var(--blue)}
-.composer .send{background:var(--blue);color:#04101f;border:0;border-radius:10px;padding:0 16px;
-  font-weight:650;font-size:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:15px 16px;
+  box-shadow:var(--shadow-1);margin-bottom:11px}
+.inc{border-left:4px solid var(--subtle)}
+.inc.high{border-left-color:var(--danger)} .inc.uncertain{border-left-color:var(--warning)}
+.inc.low,.inc.healthy{border-left-color:var(--success)}
+.inc .top{display:flex;align-items:flex-start;gap:10px}
+.inc .ttl{font-weight:650;font-size:15px;flex:1;letter-spacing:-.2px}
+.badge{font-size:11px;font-weight:700;padding:3px 9px;border-radius:8px;white-space:nowrap}
+.badge.high{background:var(--danger-bg);color:var(--danger)}
+.badge.uncertain{background:var(--warning-bg);color:var(--warning)}
+.badge.low,.badge.healthy{background:var(--success-bg);color:var(--success)}
+.inc .root{color:var(--muted);font-size:13.5px;margin-top:7px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{font-size:11.5px;background:var(--surface-2);border:1px solid var(--border-2);color:var(--muted);
+  border-radius:8px;padding:3px 9px}
+.inc .when{color:var(--subtle);font-size:12px;margin-left:auto}
+.row-acts{display:flex;gap:8px;margin-top:12px}
+.btn{flex:1;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;
+  padding:11px;font-size:13.5px;font-weight:600;color:var(--ink);display:flex;align-items:center;
+  justify-content:center;gap:6px;min-height:44px}
+.btn:active{transform:scale(.98)}
+.btn.accent{background:var(--accent);color:var(--on-accent);border-color:transparent}
+
+/* поды */
+.pod{display:flex;align-items:center;gap:11px;padding:13px 4px;border-bottom:1px solid var(--border-2)}
+.pod:last-child{border-bottom:0}
+.pod .nm{flex:1;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st{font-size:11px;font-weight:700;padding:3px 9px;border-radius:8px;white-space:nowrap}
+.st.ok{background:var(--success-bg);color:var(--success)}
+.st.warn{background:var(--warning-bg);color:var(--warning)}
+.st.err{background:var(--danger-bg);color:var(--danger)}
+.rst{font-size:12px;color:var(--subtle);min-width:30px;text-align:right}
+.rst.hot{color:var(--danger)}
+.podlog{width:38px;height:38px;border-radius:11px;background:var(--surface-2);border:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center;font-size:15px;color:var(--muted)}
+.subh{font-size:12.5px;color:var(--subtle);font-weight:600;margin:14px 4px 8px}
+.dep{display:flex;align-items:center;gap:11px;padding:11px 4px;border-bottom:1px solid var(--border-2)}
+.dep:last-child{border-bottom:0}
+.dep .nm{flex:1;font-size:13.5px}
+.rep{font-size:13px;font-weight:650} .rep.ok{color:var(--success)} .rep.bad{color:var(--danger)}
+.mini{font-size:12.5px;font-weight:600;color:var(--accent);padding:8px 10px}
+
+/* карточка наблюдаемости модели */
+.metgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:6px}
+.metgrid .v{font-size:18px;font-weight:700} .metgrid .k{font-size:11px;color:var(--muted)}
+
+.empty{color:var(--subtle);text-align:center;padding:22px;font-size:14px}
+
+/* ---------- FAB чат ---------- */
+#fab{position:fixed;right:calc(env(safe-area-inset-right) + 18px);
+  bottom:calc(env(safe-area-inset-bottom) + 20px);z-index:30;width:60px;height:60px;border-radius:20px;
+  background:var(--accent);color:var(--on-accent);display:flex;align-items:center;justify-content:center;
+  font-size:26px;box-shadow:var(--shadow-2)}
+#fab:active{transform:scale(.95)}
+
+/* ---------- шторки ---------- */
+#backdrop{position:fixed;inset:0;z-index:40;background:oklch(0 0 0/0.45);opacity:0;visibility:hidden;
+  transition:opacity .2s}
+#backdrop.on{opacity:1;visibility:visible}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);
+  border-radius:24px 24px 0 0;transform:translateY(101%);transition:transform .26s cubic-bezier(.4,0,.2,1);
+  max-width:560px;margin:0 auto;box-shadow:var(--shadow-2);display:flex;flex-direction:column;
+  max-height:92vh;padding-bottom:env(safe-area-inset-bottom)}
+.sheet.on{transform:translateY(0)}
+.sheet .grip{width:40px;height:5px;border-radius:3px;background:var(--border);margin:10px auto 4px}
+.sheet .sh{display:flex;align-items:center;gap:10px;padding:8px 20px 12px}
+.sheet .sh h3{font-size:17px;font-weight:700;margin:0;flex:1}
+.sheet .sh .x{width:34px;height:34px;border-radius:11px;background:var(--surface-2);
+  display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--muted)}
+
+/* чат */
+#chatsheet{height:92vh}
+.msgs{flex:1;overflow-y:auto;padding:8px 16px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:88%;padding:11px 14px;border-radius:16px;font-size:14.5px;white-space:pre-wrap;word-wrap:break-word}
+.msg.u{align-self:flex-end;background:var(--accent);color:var(--on-accent);border-bottom-right-radius:5px}
+.msg.a{align-self:flex-start;background:var(--surface-2);border:1px solid var(--border-2);border-bottom-left-radius:5px}
+.msg.sys{align-self:center;color:var(--subtle);font-size:12.5px;text-align:center}
+.typing{align-self:flex-start;color:var(--muted);font-size:13.5px;padding:4px 8px}
+.qchips{display:flex;gap:8px;overflow-x:auto;padding:8px 16px 6px;scrollbar-width:none}
+.qchip{white-space:nowrap;background:var(--surface-2);border:1px solid var(--border);color:var(--muted);
+  border-radius:20px;padding:8px 14px;font-size:13px;flex:none}
+.composer{display:flex;gap:9px;padding:10px 14px calc(env(safe-area-inset-bottom) + 10px);
+  border-top:1px solid var(--border-2)}
+.composer input{flex:1;background:var(--surface-2);border:1px solid var(--border);color:var(--ink);
+  border-radius:16px;padding:13px 16px;font-size:16px;outline:none}
+.composer input:focus{border-color:var(--accent)}
+.composer .send{width:48px;height:48px;border-radius:16px;background:var(--accent);color:var(--on-accent);
+  font-size:20px;flex:none}
 .composer .send:disabled{opacity:.5}
 
-#drawer{position:fixed;top:0;right:0;height:100%;width:min(720px,94vw);background:var(--panel);
-  border-left:1px solid var(--border);transform:translateX(100%);transition:transform .22s ease;
-  z-index:40;display:flex;flex-direction:column;box-shadow:-20px 0 50px #0007}
-#drawer.open{transform:translateX(0)}
-#drawer .dhead{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border)}
-#drawer .dhead .nm{font-family:var(--mono);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis}
-#drawer pre{flex:1;overflow:auto;margin:0;padding:14px 16px;font-family:var(--mono);font-size:12px;
-  line-height:1.55;color:#c6d2de;white-space:pre-wrap;word-break:break-word}
-.xbtn{background:transparent;border:1px solid var(--border2);color:var(--muted);border-radius:7px;
-  width:30px;height:30px;font-size:16px;line-height:1;display:flex;align-items:center;justify-content:center}
-.xbtn:hover{color:var(--text)}
+/* настройки */
+.setrow{display:flex;align-items:center;gap:12px;padding:15px 20px;border-top:1px solid var(--border-2)}
+.setrow .k{flex:1;font-size:15px}
+.setrow .d{font-size:12.5px;color:var(--subtle)}
+.seg{display:flex;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:3px}
+.seg button{padding:8px 12px;border-radius:9px;font-size:13px;font-weight:600;color:var(--muted)}
+.seg button.on{background:var(--accent);color:var(--on-accent)}
+#logsheet pre{flex:1;overflow:auto;margin:0;padding:12px 18px;font-family:ui-monospace,Menlo,monospace;
+  font-size:12px;line-height:1.55;color:var(--muted);white-space:pre-wrap;word-break:break-word}
 
-#toasts{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:60;
-  display:flex;flex-direction:column;gap:8px;align-items:center}
-.toast{background:var(--panel3);border:1px solid var(--border2);border-radius:9px;padding:9px 15px;
-  font-size:13px;box-shadow:0 10px 30px #0008;animation:tin .2s ease}
-.toast.ok{border-color:#2f6b3a}.toast.err{border-color:#7a352a}
-@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-.empty{color:var(--dim);text-align:center;padding:26px 10px;font-size:13px}
-.spin{width:13px;height:13px;border:2px solid var(--border2);border-top-color:var(--blue);
-  border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-2px;margin-left:6px}
+#toasts{position:fixed;left:0;right:0;bottom:calc(env(safe-area-inset-bottom) + 92px);z-index:70;
+  display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+.toast{background:var(--ink);color:var(--bg);border-radius:12px;padding:11px 18px;font-size:14px;
+  font-weight:500;box-shadow:var(--shadow-2);animation:tin .2s}
+@keyframes tin{from{opacity:0;transform:translateY(10px)}to{opacity:1}}
+.spin{width:15px;height:15px;border:2px solid var(--border);border-top-color:var(--accent);
+  border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-3px;margin-left:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
 </style>
 </head>
@@ -167,71 +213,95 @@ main{display:grid;grid-template-columns:1.35fr .9fr;gap:12px;padding:12px;min-he
 
 <div id="gate">
   <div class="card">
-    <div class="brandmark"><span class="dot"></span><b>kube-sentinel</b></div>
-    <h1>Операторская консоль</h1>
-    <p>Автономный SRE-агент, разбор первопричин и управление кластером.</p>
-    <label for="tok">Токен оператора</label>
-    <input id="tok" type="password" autocomplete="off" spellcheck="false" placeholder="введите токен">
+    <div class="logo">🛡️</div>
+    <h1>kube-sentinel</h1>
+    <p>Автономный SRE-агент. Войдите токеном оператора.</p>
+    <input id="tok" type="password" inputmode="text" autocomplete="off" placeholder="Токен оператора">
     <button id="enter">Войти</button>
     <div class="err" id="gerr"></div>
   </div>
 </div>
 
 <div id="app">
-  <header>
-    <span class="brand"><span class="dot"></span>kube-sentinel</span>
-    <span class="chip">ns&nbsp;<b id="hns">—</b></span>
-    <label class="chip" style="gap:8px">автономия
-      <select id="mode" title="уровень автономии агента">
-        <option value="observe">observe</option>
-        <option value="safe_repair">safe_repair</option>
-        <option value="full">full</option>
-      </select>
-    </label>
-    <span class="spacer"></span>
-    <span class="chip" id="slochip" title="цели уровня обслуживания и бюджет ошибок">SLO —</span>
-    <span class="chip" id="llmchip" title="наблюдаемость инференса модели">инференс —</span>
-    <span class="chip"><span class="pulse" id="pulse"></span><span id="clock">—</span></span>
-    <button class="ghost" id="logout">выйти</button>
-  </header>
+  <div class="appbar">
+    <span class="brand"><span class="dot" id="hdot"></span>kube-sentinel</span>
+    <span class="sp"></span>
+    <button class="iconbtn" id="gear">⚙️</button>
+  </div>
 
   <main>
-    <div class="col left">
-      <section class="panel incidents">
-        <div class="head"><h2>Инциденты</h2><span class="count" id="inccount"></span>
-          <span class="spacer"></span>
-          <button class="btn" id="purge" title="убрать шумовые">очистить шум</button>
-        </div>
-        <div class="body" id="inclist"><div class="empty">загрузка…</div></div>
-      </section>
-
-      <section class="panel cluster">
-        <div class="head"><h2>Кластер</h2><span class="count" id="clcount"></span></div>
-        <div class="body" id="clbody"><div class="empty">загрузка…</div></div>
-      </section>
+    <div class="hero" id="hero">
+      <div class="label">Состояние кластера</div>
+      <div class="status" id="herostatus">…</div>
+      <div class="grid">
+        <div class="m"><div class="v" id="herosli">—</div><div class="k">доступность (SLI)</div></div>
+        <div class="m"><div class="v" id="heroburn">—</div><div class="k">прожиг бюджета</div></div>
+      </div>
+      <div class="bar"><i id="herobar" style="width:0%"></i></div>
     </div>
 
-    <div class="col">
-      <section class="panel assistant">
-        <div class="head"><h2>Ассистент</h2><span class="count" id="model">gemma-4-12b</span></div>
-        <div class="chatwrap">
-          <div class="msgs" id="msgs"></div>
-          <div class="chips" id="chips"></div>
-          <div class="composer">
-            <textarea id="inp" rows="1" placeholder="Спросите ассистента… (Enter — отправить)"></textarea>
-            <button class="send" id="send">➤</button>
-          </div>
-        </div>
-      </section>
+    <div class="tiles" id="tiles"></div>
+
+    <div class="sec">
+      <div class="h"><h2>Инциденты</h2><span class="c" id="inccount"></span>
+        <span class="act" id="purge">очистить шум</span></div>
+      <div id="inclist"><div class="empty">загрузка…</div></div>
+    </div>
+
+    <div class="sec">
+      <div class="h"><h2>Кластер</h2><span class="c" id="clcount"></span></div>
+      <div class="card" id="clcard"><div class="empty">загрузка…</div></div>
+    </div>
+
+    <div class="sec">
+      <div class="h"><h2>Модель</h2><span class="c" id="modelname">gemma-4-12b</span></div>
+      <div class="card" id="modelcard"><div class="empty">нет вызовов</div></div>
     </div>
   </main>
+
+  <button id="fab">💬</button>
 </div>
 
-<div id="drawer">
-  <div class="dhead"><span class="nm" id="dname">логи</span>
-    <button class="btn" id="drefresh">обновить</button>
-    <button class="xbtn" id="dclose">×</button></div>
-  <pre id="dlogs"></pre>
+<div id="backdrop"></div>
+
+<div class="sheet" id="chatsheet">
+  <div class="grip"></div>
+  <div class="sh"><h3>Ассистент</h3><button class="x" data-close>×</button></div>
+  <div class="msgs" id="msgs"></div>
+  <div class="qchips" id="qchips"></div>
+  <div class="composer">
+    <input id="inp" type="text" placeholder="Спросите ассистента…" enterkeyhint="send">
+    <button class="send" id="send">➤</button>
+  </div>
+</div>
+
+<div class="sheet" id="settingsheet">
+  <div class="grip"></div>
+  <div class="sh"><h3>Настройки</h3><button class="x" data-close>×</button></div>
+  <div class="setrow"><div><div class="k">Автономия</div><div class="d">уровень действий агента</div></div>
+    <div class="seg" id="modeseg">
+      <button data-mode="observe">observe</button>
+      <button data-mode="safe_repair">safe</button>
+      <button data-mode="full">full</button>
+    </div></div>
+  <div class="setrow"><div><div class="k">Тема</div><div class="d">оформление</div></div>
+    <div class="seg" id="themeseg">
+      <button data-theme="light">светлая</button>
+      <button data-theme="dark">тёмная</button>
+      <button data-theme="auto">авто</button>
+    </div></div>
+  <div class="setrow"><div><div class="k">Защита агента</div>
+    <div class="d">ограда данных и разбор инъекций включены</div></div>
+    <span class="st ok">активна</span></div>
+  <div class="setrow"><button class="btn" id="logout" style="flex:1">Выйти</button></div>
+  <div style="height:14px"></div>
+</div>
+
+<div class="sheet" id="logsheet" style="height:80vh">
+  <div class="grip"></div>
+  <div class="sh"><h3 id="logname">логи</h3><button class="mini" id="logrefresh">обновить</button>
+    <button class="x" data-close>×</button></div>
+  <pre id="logbody"></pre>
 </div>
 
 <div id="toasts"></div>
@@ -241,172 +311,188 @@ const $=s=>document.querySelector(s);
 let TOKEN=localStorage.getItem('sentinel_token')||'';
 const history=[];
 
-async function api(path,opts){
-  opts=opts||{};
-  const h=opts.headers||{};
-  h['authorization']='Bearer '+TOKEN;
-  if(opts.body){h['content-type']='application/json';}
-  const r=await fetch(path,{method:opts.method||'GET',headers:h,body:opts.body?JSON.stringify(opts.body):undefined});
-  if(r.status===401){logout();throw new Error('unauthorized');}
-  setPulse(r.ok);
-  return r.json();
-}
-function setPulse(ok){const p=$('#pulse');if(p)p.classList.toggle('bad',!ok);}
+/* тема */
+function applyTheme(t){const eff=(t==='auto'||!t)?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):t;
+  document.documentElement.setAttribute('data-theme',eff);
+  document.querySelector('meta[name=theme-color]').content=eff==='dark'?'#0e1417':'#f8f9fb';}
+applyTheme(localStorage.getItem('sentinel_theme')||'auto');
 
-$('#enter').onclick=tryLogin;
-$('#tok').onkeydown=e=>{if(e.key==='Enter')tryLogin();};
-async function tryLogin(){
-  const t=$('#tok').value.trim();if(!t){return;}
-  TOKEN=t;
-  try{
-    const r=await fetch('/agent/state',{headers:{'authorization':'Bearer '+t}});
+async function api(path,opts){opts=opts||{};const h=opts.headers||{};h['authorization']='Bearer '+TOKEN;
+  if(opts.body)h['content-type']='application/json';
+  const r=await fetch(path,{method:opts.method||'GET',headers:h,body:opts.body?JSON.stringify(opts.body):undefined});
+  if(r.status===401){logout();throw new Error('401');}
+  $('#hdot').classList.toggle('bad',!r.ok);return r.json();}
+
+/* вход */
+$('#enter').onclick=tryLogin; $('#tok').addEventListener('keydown',e=>{if(e.key==='Enter')tryLogin();});
+async function tryLogin(){const t=$('#tok').value.trim();if(!t)return;TOKEN=t;
+  try{const r=await fetch('/agent/state',{headers:{'authorization':'Bearer '+t}});
     if(r.status===401){$('#gerr').textContent='Неверный токен';return;}
-    localStorage.setItem('sentinel_token',t);boot();
-  }catch(e){$('#gerr').textContent='Панель недоступна';}
-}
+    localStorage.setItem('sentinel_token',t);boot();}
+  catch(e){$('#gerr').textContent='Панель недоступна';}}
 function logout(){localStorage.removeItem('sentinel_token');TOKEN='';location.reload();}
 $('#logout').onclick=logout;
 
-function boot(){
-  $('#gate').style.display='none';$('#app').style.display='grid';
-  tick();refreshAll();setInterval(refreshAll,5000);setInterval(tick,1000);
-  greet();renderChips();$('#inp').focus();
+function boot(){$('#gate').style.display='none';$('#app').style.display='flex';
+  refreshAll();setInterval(refreshAll,5000);renderQchips();syncSegs();}
+
+async function refreshAll(){try{await Promise.all([loadCore(),loadIncidents(),loadCluster(),loadModel()]);}catch(e){}}
+
+/* геройская карточка + плитки: здоровье, SLO, обзор, модель */
+let lastOverview={pods:[],deployments:[]}, lastSlo={}, lastLlm={}, lastState={};
+async function loadCore(){
+  const [ov,sl,st]=await Promise.all([api('/overview'),api('/slo'),api('/agent/state')]);
+  lastOverview=ov; lastSlo=sl; lastState=st;
+  const pods=ov.pods||[]; const bad=pods.filter(p=>podSt(p)[0]!=='ok').length;
+  // геройский статус
+  let sev='ok', label='Здоров';
+  if(sl.enabled&&sl.severity==='critical'){sev='crit';label='Критично';}
+  else if(bad>0||(sl.enabled&&sl.severity==='at_risk')){sev='warn';label='Под угрозой';}
+  const hero=$('#hero');hero.className='hero '+sev;
+  $('#herostatus').textContent=bad>0?('Проблемных подов: '+bad):label;
+  $('#herosli').textContent=sl.enabled?(Math.round(sl.sli*1000)/10+'%'):'—';
+  $('#heroburn').textContent=sl.enabled?(sl.burn_rate+'×'):'выкл';
+  $('#herobar').style.width=sl.enabled?Math.min(100,Math.round((sl.burn_rate/20)*100))+'%':'0%';
+  // плитки
+  tiles([
+    ['Поды', (pods.length-bad)+'/'+pods.length, bad?'warn':'good'],
+    ['Автономия', st.mode||st.autonomy||'—', ''],
+    ['Задержка p95', (lastLlm.latency_p95_ms?Math.round(lastLlm.latency_p95_ms)+' мс':'—'), ''],
+    ['Ошибки модели', (lastLlm.calls?Math.round((lastLlm.error_rate||0)*100)+'%':'—'),
+      (lastLlm.error_rate>0.1?'bad':'good')],
+  ]);
 }
-function tick(){$('#clock').textContent=new Date().toLocaleTimeString('ru-RU');}
+function tiles(items){const box=$('#tiles');box.textContent='';for(const [k,v,cls] of items){
+  const t=document.createElement('div');t.className='tile';
+  const vv=document.createElement('div');vv.className='v'+(cls?' '+cls:'');vv.textContent=v;
+  const kk=document.createElement('div');kk.className='k';kk.textContent=k;
+  t.appendChild(vv);t.appendChild(kk);box.appendChild(t);}}
 
-async function refreshAll(){try{await Promise.all([loadIncidents(),loadCluster(),loadState(),loadSlo(),loadLlm()]);}catch(e){}}
-async function loadSlo(){try{const s=await api('/slo');const c=$('#slochip');
-  if(!s||!s.enabled){c.textContent='SLO выкл';c.style.color='';return;}
-  const col={ok:'#6cd67f',at_risk:'#f0c454',critical:'#ff8a6a'}[s.severity]||'';
-  c.textContent='SLO '+s.severity+' · burn '+s.burn_rate+'×';c.style.color=col;}catch(e){}}
-async function loadLlm(){try{const m=await api('/llm/metrics');const c=$('#llmchip');
-  if(!m||!m.calls){c.textContent='инференс —';return;}
-  c.textContent='инференс p95 '+Math.round(m.latency_p95_ms)+'мс · ошиб '+Math.round(m.error_rate*100)+'%';
-  c.style.color=m.error_rate>0.1?'#ff8a6a':'';}catch(e){}}
-async function loadState(){try{const s=await api('/agent/state');$('#mode').value=s.mode||s.autonomy||'observe';}catch(e){}}
-$('#mode').onchange=async()=>{
-  try{await api('/agent/mode',{method:'POST',body:{mode:$('#mode').value}});toast('автономия: '+$('#mode').value,'ok');}
-  catch(e){toast('не удалось сменить режим','err');}
-};
-
+/* инциденты */
 const BAND=b=>({high:'high',uncertain:'uncertain',low:'low',healthy:'healthy'}[b]||'low');
 function when(ts){if(!ts)return'';const s=(Date.now()-new Date(ts))/1000;
-  if(s<60)return Math.round(s)+'с назад';if(s<3600)return Math.round(s/60)+'м назад';return Math.round(s/3600)+'ч назад';}
-async function loadIncidents(){
-  const d=await api('/incidents');const box=$('#inclist');const gs=d.groups||[];
-  $('#inccount').textContent=gs.length?(gs.length+' активн., '+(d.unread||0)+' непрочит.'):'';
+  if(s<60)return Math.round(s)+' с';if(s<3600)return Math.round(s/60)+' мин';return Math.round(s/3600)+' ч';}
+async function loadIncidents(){const d=await api('/incidents');const box=$('#inclist');const gs=d.groups||[];
+  $('#inccount').textContent=gs.length?(gs.length+' активн.'):'';
   box.textContent='';
-  if(!gs.length){const e=document.createElement('div');e.className='empty';
+  if(!gs.length){const e=document.createElement('div');e.className='card empty';
     e.textContent='Инцидентов нет. Кластер спокоен.';box.appendChild(e);return;}
-  for(const g of gs){box.appendChild(incCard(g));}
-}
-function incCard(g){
-  const band=BAND(g.band);const el=document.createElement('div');el.className='inc '+band;
+  for(const g of gs)box.appendChild(incCard(g));}
+function incCard(g){const band=BAND(g.band);const el=document.createElement('div');el.className='card inc '+band;
   const top=document.createElement('div');top.className='top';
-  const t=document.createElement('div');t.className='title';t.textContent=g.title||'инцидент';
+  const t=document.createElement('div');t.className='ttl';t.textContent=g.title||'инцидент';
   const b=document.createElement('span');b.className='badge '+band;b.textContent=g.band||g.status||'';
   top.appendChild(t);top.appendChild(b);el.appendChild(top);
   const v=g.last_verdict||{};
-  if(v.root_cause){const rc=document.createElement('div');rc.className='root';rc.textContent=v.root_cause;el.appendChild(rc);}
-  const meta=document.createElement('div');meta.className='meta';
-  for(const dt of (g.detectors||[])){const x=document.createElement('span');x.className='tag';x.textContent=dt;meta.appendChild(x);}
-  const cnt=document.createElement('span');cnt.className='tag';cnt.textContent='×'+(g.count||1);meta.appendChild(cnt);
-  const w=document.createElement('span');w.className='when';w.textContent=when(g.last_seen);meta.appendChild(w);
-  el.appendChild(meta);
-  const acts=document.createElement('div');acts.className='acts';
+  if(v.root_cause){const r=document.createElement('div');r.className='root';r.textContent=v.root_cause;el.appendChild(r);}
+  const ch=document.createElement('div');ch.className='chips';
+  for(const dt of (g.detectors||[])){const x=document.createElement('span');x.className='chip';x.textContent=dt;ch.appendChild(x);}
+  const w=document.createElement('span');w.className='when';w.textContent=when(g.last_seen);ch.appendChild(w);
+  el.appendChild(ch);
+  const acts=document.createElement('div');acts.className='row-acts';
   const pod=(v.params||{}).pod;
-  if(pod){acts.appendChild(btn('Логи',()=>showPodLogs(pod)));}
-  const ab=btn('Спросить ассистента',()=>askAbout(g));ab.classList.add('warn');acts.appendChild(ab);
-  el.appendChild(acts);return el;
-}
-function btn(label,fn,cls){const b=document.createElement('button');b.className='btn'+(cls?' '+cls:'');
+  if(pod)acts.appendChild(mkbtn('Логи',()=>showLogs(pod)));
+  acts.appendChild(mkbtn('Спросить',()=>{openSheet('chatsheet');askAbout(g);},true));
+  el.appendChild(acts);return el;}
+function mkbtn(label,fn,accent){const b=document.createElement('button');b.className='btn'+(accent?' accent':'');
   b.textContent=label;b.onclick=fn;return b;}
 $('#purge').onclick=async()=>{try{const r=await api('/incidents/purge-noise',{method:'POST'});
-  toast('убрано шумовых: '+(r.purged||0),'ok');loadIncidents();}catch(e){toast('ошибка','err');}};
+  toast('убрано шумовых: '+(r.purged||0));loadIncidents();}catch(e){toast('ошибка');}};
 
-function podStatus(p){
-  if(p.waiting_reason)return['err',p.waiting_reason];
-  if(p.oom_killed)return['err','OOMKilled'];
-  if(p.phase==='Running')return['ok','Running'];
-  if(p.phase==='Succeeded')return['ok','Succeeded'];
-  if(p.phase==='Pending')return['warn','Pending'];
-  return['warn',p.phase||'—'];
-}
-async function loadCluster(){
-  const d=await api('/overview');$('#hns').textContent=d.namespace||'—';
-  const pods=d.pods||[],deps=d.deployments||[];
-  const bad=pods.filter(p=>podStatus(p)[0]!=='ok').length;
-  $('#clcount').textContent=pods.length+' подов'+(bad?(', '+bad+' с проблемой'):'');
-  const box=$('#clbody');box.textContent='';
-  for(const p of pods){
-    const st=podStatus(p);const row=document.createElement('div');row.className='krow';
-    const nm=document.createElement('div');nm.className='nm';nm.textContent=p.name;nm.title=p.name;
-    const s=document.createElement('span');s.className='st '+st[0];s.textContent=st[1];
+/* кластер */
+function podSt(p){if(p.waiting_reason)return['err',p.waiting_reason];if(p.oom_killed)return['err','OOMKilled'];
+  if(p.phase==='Running'||p.phase==='Succeeded')return['ok',p.phase];if(p.phase==='Pending')return['warn','Pending'];
+  return['warn',p.phase||'—'];}
+async function loadCluster(){const d=lastOverview;const pods=d.pods||[],deps=d.deployments||[];
+  const bad=pods.filter(p=>podSt(p)[0]!=='ok').length;
+  $('#clcount').textContent=pods.length+' подов'+(bad?', '+bad+' с проблемой':'');
+  const box=$('#clcard');box.textContent='';
+  for(const p of pods){const s=podSt(p);const row=document.createElement('div');row.className='pod';
+    const nm=document.createElement('div');nm.className='nm';nm.textContent=p.name;
+    const st=document.createElement('span');st.className='st '+s[0];st.textContent=s[1];
     const rs=document.createElement('span');rs.className='rst'+(p.restarts?' hot':'');rs.textContent='↻'+p.restarts;
-    const lg=btn('логи',()=>showPodLogs(p.name));lg.style.padding='3px 9px';lg.style.fontSize='11px';
-    row.appendChild(nm);row.appendChild(s);row.appendChild(rs);row.appendChild(lg);box.appendChild(row);
-  }
-  if(deps.length){
-    const sh=document.createElement('div');sh.className='subhead';sh.textContent='Деплойменты';box.appendChild(sh);
-    for(const dp of deps){
-      const row=document.createElement('div');row.className='drow';
+    const lg=document.createElement('button');lg.className='podlog';lg.textContent='☰';lg.onclick=()=>showLogs(p.name);
+    row.appendChild(nm);row.appendChild(st);row.appendChild(rs);row.appendChild(lg);box.appendChild(row);}
+  if(deps.length){const sh=document.createElement('div');sh.className='subh';sh.textContent='Деплойменты';box.appendChild(sh);
+    for(const dp of deps){const row=document.createElement('div');row.className='dep';
       const nm=document.createElement('div');nm.className='nm';nm.textContent=dp.name;
       const ok=dp.desired>0&&dp.ready>=dp.desired;
       const rep=document.createElement('span');rep.className='rep '+(ok?'ok':'bad');rep.textContent=dp.ready+'/'+dp.desired;
-      const rb=btn('перезапуск',()=>restartDep(dp.name),'warn');rb.style.padding='3px 9px';rb.style.fontSize='11px';
-      row.appendChild(nm);row.appendChild(rep);row.appendChild(rb);box.appendChild(row);
-    }
-  }
-}
-async function restartDep(name){
-  toast('перезапуск '+name+'…');
+      const rb=document.createElement('button');rb.className='mini';rb.textContent='перезапуск';rb.onclick=()=>restartDep(dp.name);
+      row.appendChild(nm);row.appendChild(rep);row.appendChild(rb);box.appendChild(row);}}}
+async function restartDep(name){toast('перезапуск '+name+'…');
   try{const r=await api('/action/restart',{method:'POST',body:{name}});
-    toast(r.ok?('перезапущен '+name):('отказ: '+(r.detail||'')),r.ok?'ok':'err');setTimeout(loadCluster,1200);}
-  catch(e){toast('ошибка перезапуска','err');}
-}
+    toast(r.ok?'перезапущен '+name:'отказ: '+(r.detail||''));setTimeout(()=>refreshAll(),1200);}
+  catch(e){toast('ошибка');}}
 
-let curPod=null;
-async function showPodLogs(pod){
-  curPod=pod;$('#dname').textContent=pod;$('#dlogs').textContent='загрузка…';$('#drawer').classList.add('open');
-  try{const r=await api('/pod/logs',{method:'POST',body:{pod,lines:200}});
-    $('#dlogs').textContent=r.ok?(r.logs||'(пусто)'):('— '+(r.message||'нет логов'));}
-  catch(e){$('#dlogs').textContent='ошибка получения логов';}
-}
-$('#dclose').onclick=()=>$('#drawer').classList.remove('open');
-$('#drefresh').onclick=()=>{if(curPod)showPodLogs(curPod);};
+/* наблюдаемость модели */
+async function loadModel(){const m=await api('/llm/metrics');lastLlm=m;const box=$('#modelcard');
+  if(!m.calls){box.innerHTML='';const e=document.createElement('div');e.className='empty';e.textContent='нет вызовов модели';box.appendChild(e);return;}
+  box.textContent='';const g=document.createElement('div');g.className='metgrid';
+  const cost=m.cost_total?('$'+m.cost_total):'локально';
+  [['p50', Math.round(m.latency_p50_ms)+' мс'],['p95',Math.round(m.latency_p95_ms)+' мс'],
+   ['вызовов', m.calls],['токены', (m.prompt_tokens+m.completion_tokens)],
+   ['ошибки', Math.round(m.error_rate*100)+'%'],['стоимость', cost]].forEach(([k,v])=>{
+    const c=document.createElement('div');const vv=document.createElement('div');vv.className='v';vv.textContent=v;
+    const kk=document.createElement('div');kk.className='k';kk.textContent=k;c.appendChild(vv);c.appendChild(kk);g.appendChild(c);});
+  box.appendChild(g);
+  if(m.latency_drift){const d=document.createElement('div');d.className='k';d.style.marginTop='10px';
+    d.textContent='дрейф задержки: '+(m.latency_drift>0?'+':'')+m.latency_drift+' мс';box.appendChild(d);}}
 
-function addMsg(role,text){const m=document.createElement('div');m.className='msg '+role;
-  m.textContent=text;$('#msgs').appendChild(m);$('#msgs').scrollTop=$('#msgs').scrollHeight;return m;}
-function greet(){addMsg('sys','Ассистент на связи. Модель gemma-4-12b, локально на GPU. Видит инциденты и состояние подов.');}
-const QUICK=['Что сейчас сломано в кластере?','Разбери главный инцидент и дай план',
-  'Как чинить ImagePullBackOff?','Почему под уходит в OOMKilled?'];
-function renderChips(){const c=$('#chips');c.textContent='';for(const q of QUICK){
-  const b=document.createElement('button');b.className='qchip';b.textContent=q;
-  b.onclick=()=>{$('#inp').value=q;sendMsg();};c.appendChild(b);}}
-function askAbout(g){$('#inp').value='Разбери инцидент: '+(g.title||'')+'. '+((g.last_verdict||{}).root_cause||'')+' Дай план устранения.';sendMsg();}
+/* ассистент */
+function addMsg(role,text){const m=document.createElement('div');m.className='msg '+role;m.textContent=text;
+  $('#msgs').appendChild(m);$('#msgs').scrollTop=$('#msgs').scrollHeight;return m;}
+let greeted=false;
+function greet(){if(greeted)return;greeted=true;addMsg('sys','Ассистент на gemma-4-12b, локально на GPU. Видит инциденты и поды.');}
+const QUICK=['Что сломано?','Разбери главный инцидент','Как чинить ImagePullBackOff?','Почему OOMKilled?'];
+function renderQchips(){const c=$('#qchips');c.textContent='';for(const q of QUICK){
+  const b=document.createElement('button');b.className='qchip';b.textContent=q;b.onclick=()=>{$('#inp').value=q;sendMsg();};c.appendChild(b);}}
+function askAbout(g){$('#inp').value='Разбери инцидент: '+(g.title||'')+'. '+((g.last_verdict||{}).root_cause||'')+' Дай план.';sendMsg();}
 let busy=false;
-async function sendMsg(){
-  const inp=$('#inp');const text=inp.value.trim();if(!text||busy)return;
-  inp.value='';inp.style.height='42px';addMsg('u',text);history.push({role:'user',content:text});
-  busy=true;$('#send').disabled=true;
+async function sendMsg(){const inp=$('#inp');const text=inp.value.trim();if(!text||busy)return;
+  inp.value='';addMsg('u',text);history.push({role:'user',content:text});busy=true;$('#send').disabled=true;
   const tw=document.createElement('div');tw.className='typing';tw.textContent='ассистент думает';
-  const sp=document.createElement('span');sp.className='spin';tw.appendChild(sp);
-  $('#msgs').appendChild(tw);$('#msgs').scrollTop=$('#msgs').scrollHeight;
+  const sp=document.createElement('span');sp.className='spin';tw.appendChild(sp);$('#msgs').appendChild(tw);
+  $('#msgs').scrollTop=$('#msgs').scrollHeight;
   try{const r=await api('/ask',{method:'POST',body:{message:text,history:history.slice(0,-1)}});
-    tw.remove();const ans=r.answer||'(нет ответа)';addMsg('a',ans);history.push({role:'assistant',content:ans});}
+    tw.remove();const a=r.answer||'(нет ответа)';addMsg('a',a);history.push({role:'assistant',content:a});}
   catch(e){tw.remove();addMsg('a','ошибка обращения к ассистенту');}
-  finally{busy=false;$('#send').disabled=false;inp.focus();}
-}
-$('#send').onclick=sendMsg;
-$('#inp').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg();}});
-$('#inp').addEventListener('input',e=>{e.target.style.height='42px';e.target.style.height=Math.min(120,e.target.scrollHeight)+'px';});
+  finally{busy=false;$('#send').disabled=false;inp.focus();}}
+$('#send').onclick=sendMsg;$('#inp').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendMsg();}});
+$('#fab').onclick=()=>{openSheet('chatsheet');greet();$('#inp').focus();};
 
-function toast(text,kind){const t=document.createElement('div');t.className='toast'+(kind?' '+kind:'');
-  t.textContent=text;$('#toasts').appendChild(t);setTimeout(()=>t.remove(),3200);}
+/* логи */
+let curPod=null;
+async function showLogs(pod){curPod=pod;$('#logname').textContent=pod;$('#logbody').textContent='загрузка…';openSheet('logsheet');
+  try{const r=await api('/pod/logs',{method:'POST',body:{pod,lines:200}});
+    $('#logbody').textContent=r.ok?(r.logs||'(пусто)'):('— '+(r.message||'нет логов'));}
+  catch(e){$('#logbody').textContent='ошибка';}}
+$('#logrefresh').onclick=()=>{if(curPod)showLogs(curPod);};
+
+/* шторки */
+function openSheet(id){$('#'+id).classList.add('on');$('#backdrop').classList.add('on');}
+function closeSheets(){document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('on'));$('#backdrop').classList.remove('on');}
+$('#backdrop').onclick=closeSheets;
+document.querySelectorAll('[data-close]').forEach(b=>b.onclick=closeSheets);
+$('#gear').onclick=()=>openSheet('settingsheet');
+
+/* сегменты настроек */
+function syncSegs(){const m=lastState.mode||lastState.autonomy||'observe';
+  document.querySelectorAll('#modeseg button').forEach(b=>b.classList.toggle('on',b.dataset.mode===m));
+  const th=localStorage.getItem('sentinel_theme')||'auto';
+  document.querySelectorAll('#themeseg button').forEach(b=>b.classList.toggle('on',b.dataset.theme===th));}
+document.querySelectorAll('#modeseg button').forEach(b=>b.onclick=async()=>{
+  try{await api('/agent/mode',{method:'POST',body:{mode:b.dataset.mode}});toast('автономия: '+b.dataset.mode);
+    lastState.mode=b.dataset.mode;syncSegs();}catch(e){toast('ошибка');}});
+document.querySelectorAll('#themeseg button').forEach(b=>b.onclick=()=>{
+  localStorage.setItem('sentinel_theme',b.dataset.theme);applyTheme(b.dataset.theme);syncSegs();});
+
+function toast(t){const el=document.createElement('div');el.className='toast';el.textContent=t;
+  $('#toasts').appendChild(el);setTimeout(()=>el.remove(),3000);}
 
 if(TOKEN){fetch('/agent/state',{headers:{'authorization':'Bearer '+TOKEN}}).then(r=>{
   if(r.ok)boot();else localStorage.removeItem('sentinel_token');}).catch(()=>{});}
-$('#tok').focus();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
 </body>
 </html>
