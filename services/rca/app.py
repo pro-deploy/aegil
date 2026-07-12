@@ -239,7 +239,7 @@ def analyze_endpoint(req: AnalyzeReq) -> dict:
     # Метрики золотых сигналов: напрямую из тела либо чтением из Prometheus (мягкая деградация,
     # при недоступности хранилища анализ логов продолжается без метрик).
     metric_facts = req.metrics
-    if metric_facts is None and req.use_metrics:
+    if metric_facts is None and (req.use_metrics or metrics.PROM_URL):
         metric_facts = metrics.fetch(minutes=req.minutes)
 
     out = analyze(records, baseline=baseline, delta=req.delta,
