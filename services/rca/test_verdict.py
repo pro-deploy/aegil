@@ -96,6 +96,21 @@ def test_application_errors_without_network_signal():
     assert "каскад" not in v["root_cause"].lower()
 
 
+def test_metric_only_incident_is_reported():
+    # Логи окна чистые, но метрики золотых сигналов бьют по железу (узел отвалился, диск полон).
+    # Вердикт ОБЯЗАН заявить инцидент с инфраструктурной первопричиной, а не объявить здоровье.
+    from metric_detectors import detect_metrics
+    healthy = [{"level": "info", "service": "api", "msg": "ok", "_ts_ns": i} for i in range(20)]
+    f = aggregate(healthy)
+    d = detect(f) + detect_metrics({"present": True, "node_not_ready": 1, "disk_usage": 0.96})
+    v = build(f, d, score(d), healthy)
+    assert v["status"] in ("incident", "degraded")   # заявлен инцидент, а не здоровье
+    assert v["status"] != "healthy"
+    assert "узла" in v["root_cause"]           # приоритет отказа узла над диском
+    assert v["action"]
+    assert v["evidence"] and v["evidence"][0]["kind"] == "metric" and v["evidence"][0]["grounded"] is True
+
+
 def test_symptoms_read_from_plain_text_logs():
     # Негативная проверка слепоты: вердикт по ПРОСТЫМ текстовым логам подов (без
     # структурного поля error_signal) всё равно опознаёт сетевую первопричину.

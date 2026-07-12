@@ -28,6 +28,50 @@ from normalize import (
 # Предел числа представительных цитат в реестре свидетельств.
 MAX_EVIDENCE = 6
 
+# Каталог метрических первопричин по приоритету: физический отказ узла и памяти важнее
+# прикладных сигналов, поэтому при одновременном срабатывании корнем берётся самый нижний по
+# стеку отказ. Имя совпадает с полем name детектора метрик (модуль metric_detectors). Каждой
+# причине сопоставлено осмысленное действие оператору.
+_METRIC_ROOT = [
+    ("node_not_ready", "Отказ узла кластера: узел неготов",
+     "Проверить состояние узла (kubectl get nodes, describe node), сеть узла и kubelet"),
+    ("node_pressure", "Давление ресурсов на узле кластера",
+     "Проверить давление диска и памяти на узле, освободить ресурсы или увести нагрузку"),
+    ("oom_events", "Нехватка памяти: события OOM",
+     "Поднять лимит памяти затронутых подов либо устранить рост потребления"),
+    ("disk_saturation", "Переполнение диска узла",
+     "Освободить место на файловой системе узла либо расширить её"),
+    ("pvc_saturation", "Переполнение постоянного тома",
+     "Расширить PVC либо очистить данные тома"),
+    ("pods_pending", "Поды не планируются: нехватка ресурсов или узлов",
+     "Проверить квоты, запросы ресурсов подов и доступность узлов планировщику"),
+    ("cpu_throttling", "Троттлинг процессора по лимиту",
+     "Поднять лимит процессора затронутых подов либо снизить нагрузку"),
+    ("cpu_saturation", "Насыщение процессора",
+     "Масштабировать сервис горизонтально либо поднять лимит процессора"),
+    ("mem_saturation", "Насыщение памяти",
+     "Поднять лимит памяти либо устранить рост потребления"),
+    ("net_errors", "Сетевые ошибки на узле",
+     "Проверить сеть узла, драйверы и загрузку сетевых интерфейсов"),
+    ("latency_spike", "Рост задержки обслуживания",
+     "Найти узкое место по трассировкам и метрикам латентности вниз по графу вызовов"),
+    ("metric_error_ratio", "Рост доли серверных ошибок по метрикам",
+     "Разобрать источник ошибок по трассировкам и логам затронутого сервиса"),
+    ("traffic_drop", "Обвал трафика запросов",
+     "Проверить вышестоящий балансировщик, входной трафик и готовность сервиса"),
+]
+
+
+def _metric_root_cause(metric_fired: list):
+    """Выбирает метрическую первопричину и действие по приоритету инфраструктурных отказов.
+    Возвращает (причина, действие) или (None, None), если метрических срабатываний нет."""
+    names = {d.get("name") for d in metric_fired}
+    for name, cause, action in _METRIC_ROOT:
+        if name in names:
+            ev = next((str(d.get("evidence", "")) for d in metric_fired if d.get("name") == name), "")
+            return (f"{cause} ({ev})" if ev else cause), action
+    return None, None
+
 
 def _rec_symptoms(rec: dict) -> set:
     """Симптомы записи из текста плюс честно переданное структурное поле-симптом."""
@@ -133,14 +177,25 @@ def build(facts: dict, detectors: list, score: dict, records) -> dict:
 
     band = score.get("band")
 
-    # Порог утверждения инцидента. Причину заявляем при наличии свидетельств И когда
-    # либо уверенность выше нижней полосы, либо сработал хотя бы один объёмный детектор
-    # (spike/http/blast/network/change). Второе условие снимает парадокс «здоровье при
-    # реальном всплеске»: если объёмный детектор явно сработал по волне ошибок, окно не
-    # может быть объявлено здоровым только из-за того, что уверенность недобрала полосу.
+    # Метрики золотых сигналов и инфраструктуры: детекторы группы m_* работают вне текста
+    # логов, поэтому вердикт должен уметь заявить инцидент и по ним, когда логи чисты. Иначе
+    # явный отказ узла, диска или памяти остаётся невидимым в вердикте (доказано прогоном).
+    # Свидетельство метрики заземлено на само её значение (kind=metric), а не на цитату лога,
+    # поэтому гард «нет свидетельства, нет утверждения» проходит и для метрического инцидента.
+    metric_fired = [d for d in detectors if d.get("fired") and str(d.get("group", "")).startswith("m_")]
+    metric_ev = [{"source": "metric:" + str(d.get("name", d.get("id", ""))),
+                  "snippet": str(d.get("evidence", "")), "kind": "metric", "grounded": True}
+                 for d in metric_fired][:MAX_EVIDENCE]
+    metric_root, metric_action = _metric_root_cause(metric_fired)
+
+    # Порог утверждения инцидента. Причину заявляем при наличии свидетельств (логовых или
+    # метрических) И когда либо уверенность выше нижней полосы, либо сработал объёмный детектор
+    # (spike/http/blast/change), либо сработал метрический детектор. Это снимает парадокс
+    # «здоровье при реальном отказе»: явное срабатывание не может быть объявлено здоровьем
+    # только из-за того, что уверенность недобрала полосу.
     volume_groups = {"spike", "http", "blast", "change"}
     volume_fired = any(d.get("fired") and d.get("group") in volume_groups for d in detectors)
-    assert_incident = bool(ledger) and (band != "low" or volume_fired)
+    assert_incident = (bool(ledger) or bool(metric_ev)) and (band != "low" or volume_fired or bool(metric_fired))
 
     root_cause = None
     action = None
@@ -157,11 +212,15 @@ def build(facts: dict, detectors: list, score: dict, records) -> dict:
         elif err_signals and err_signals <= SECONDARY_SIGNALS:
             root_cause = "Каскад отмен от вышестоящего сервиса; первичный источник в окне не найден"
             action = "Расширить окно и искать первичный физический сигнал выше по графу вызовов"
-        else:
-            svc = max(sorted(err_by_service), key=lambda s: err_by_service[s]) if err_by_service else "unknown"
+        elif err_by_service:
+            svc = max(sorted(err_by_service), key=lambda s: err_by_service[s])
             root_cause = f"Прикладные ошибки сервиса {svc} без сетевого сигнала"
             action = (f"Разобрать ошибки сервиса {svc} по номеру трассировки; причина "
                       f"локальна в окне, эскалация вверх по графу не требуется")
+        # Логовой первопричины нет (например, окно логов чистое), но метрики бьют тревогу:
+        # корнем становится инфраструктурный сигнал метрик.
+        if root_cause is None and metric_root:
+            root_cause, action = metric_root, metric_action
 
     if not assert_incident:
         status = "healthy"
@@ -170,7 +229,7 @@ def build(facts: dict, detectors: list, score: dict, records) -> dict:
     else:
         status = "degraded"
 
-    ev = ledger if assert_incident else []
+    ev = (ledger + metric_ev)[:MAX_EVIDENCE] if assert_incident else []
 
     return {
         "status": status,
