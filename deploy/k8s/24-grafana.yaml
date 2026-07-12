@@ -1,9 +1,11 @@
-# Панель Grafana (ADR-0032, A.9). Единый обзор логов (Loki) и трасс (Tempo),
-# связанных по trace_id: из строки лога переход в трассу и обратно. Источники
-# провижинятся автоматически. Пароль администратора берётся из секрета
-# grafana-admin (создайте: kubectl -n krokki create secret generic grafana-admin
-# --from-literal=password=...). Доступ через port-forward или отдельное правило
-# ingress (здесь не добавляется, чтобы не трогать 50-ingress.yaml).
+# Панель Grafana. Единый обзор логов (Loki) и трасс (Tempo), связанных по trace_id:
+# из строки лога переход в трассу и обратно. Источники провижинятся автоматически.
+# Логин и пароль администратора берутся из секрета grafana-admin, создайте его до
+# применения манифеста:
+#   kubectl -n sentinel create secret generic grafana-admin \
+#     --from-literal=user=admin --from-literal=password=$(openssl rand -hex 24)
+# Доступ только через port-forward, наружу Grafana не публикуется:
+#   kubectl -n sentinel port-forward svc/grafana 3000:3000
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -69,14 +71,15 @@ spec:
     metadata:
       labels: {app: grafana}
     spec:
-      nodeSelector: {node-role.kubernetes.io/role: control}
+      automountServiceAccountToken: false
       securityContext: {fsGroup: 472}
       containers:
         - name: grafana
           image: grafana/grafana:11.1.0
           ports: [{containerPort: 3000}]
           env:
-            - {name: GF_SECURITY_ADMIN_USER, value: "admin"}
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom: {secretKeyRef: {name: grafana-admin, key: user}}
             - name: GF_SECURITY_ADMIN_PASSWORD
               valueFrom: {secretKeyRef: {name: grafana-admin, key: password}}
             - {name: GF_ANALYTICS_REPORTING_ENABLED, value: "false"}
@@ -85,6 +88,10 @@ spec:
             httpGet: {path: /api/health, port: 3000}
             initialDelaySeconds: 15
             periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /api/health, port: 3000}
+            initialDelaySeconds: 60
+            periodSeconds: 30
           volumeMounts:
             - {name: datasources, mountPath: /etc/grafana/provisioning/datasources}
             - {name: data, mountPath: /var/lib/grafana}

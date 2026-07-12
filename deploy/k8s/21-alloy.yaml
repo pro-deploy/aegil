@@ -1,7 +1,8 @@
-# Агент сбора логов Grafana Alloy (ADR-0032, A.9). Забирает логи подов через
-# Kubernetes API, обогащает метками namespace/pod/node/container/app (контекст
-# кластера, A.8), маскирует персональные данные до отправки (почта, телефоны, A.3)
-# и пишет в Loki. Одна реплика на управляющем узле.
+# Агент сбора логов Grafana Alloy. Забирает логи подов через Kubernetes API, обогащает
+# метками namespace/pod/node/container/app, маскирует персональные данные до отправки
+# (почта, телефоны) и пишет в Loki. Сбор ограничен наблюдаемым пространством имён
+# (по умолчанию sentinel), чтобы не забирать логи всех пространств чужого кластера.
+# Одна реплика.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -11,7 +12,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: krokki-alloy
+  name: sentinel-alloy
 rules:
   - apiGroups: [""]
     resources: [pods, pods/log, namespaces, nodes]
@@ -20,11 +21,11 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: krokki-alloy
+  name: sentinel-alloy
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: krokki-alloy
+  name: sentinel-alloy
 subjects:
   - kind: ServiceAccount
     name: alloy
@@ -37,8 +38,14 @@ metadata:
   namespace: sentinel
 data:
   config.alloy: |
+    // Обнаружение подов ограничено наблюдаемым пространством имён (по умолчанию sentinel).
+    // Без этого ограничения Alloy забирал бы логи всех пространств чужого кластера. Имя
+    // пространства параметризуется: в чарте оно подставляется из значения targetNamespace.
     discovery.kubernetes "pods" {
       role = "pod"
+      namespaces {
+        names = ["sentinel"]
+      }
     }
 
     discovery.relabel "pods" {
@@ -103,7 +110,6 @@ spec:
     metadata:
       labels: {app: alloy}
     spec:
-      nodeSelector: {node-role.kubernetes.io/role: control}
       serviceAccountName: alloy
       containers:
         - name: alloy
@@ -114,6 +120,14 @@ spec:
             - --storage.path=/var/lib/alloy
             - --server.http.listen-addr=0.0.0.0:12345
           ports: [{containerPort: 12345, name: http}]
+          readinessProbe:
+            httpGet: {path: /-/ready, port: 12345}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /-/ready, port: 12345}
+            initialDelaySeconds: 30
+            periodSeconds: 30
           volumeMounts:
             - {name: config, mountPath: /etc/alloy}
             - {name: data, mountPath: /var/lib/alloy}

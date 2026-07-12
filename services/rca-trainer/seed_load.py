@@ -1,43 +1,54 @@
-"""Засев размеченных примеров маршрутизатора RCA в таблицу rca_route_examples
-(ADR-0032, Часть B; книга Биркина, глава 10.6). Читает сидовый датасет
+"""Засев размеченных примеров маршрутизатора сервиса разбора первопричин
+kube-sentinel в таблицу rca_route_examples. Инструмент читает сидовый датасет
 seed_dataset.jsonl (по одной JSON-записи на строку с полями text и labels) и
 вставляет каждый пример теми же полями, что пишет recorder боевого каскада
 (services/rca/store.py): query, labels, source. Отличие лишь в источнике: у сида
-source равен seed, а trained_at остаётся NULL, поэтому тренер увидит записи как
-новые и включит их в первое же дообучение SetFit.
+source равен seed, а trained_at остаётся NULL, поэтому тренер увидит записи как новые
+и включит их в первое же дообучение SetFit.
 
-Инструмент идемпотентен: повторный запуск не создаёт дубликатов. Идемпотентность
-опирается на хеш текста примера (нормализованного): перед вставкой считывается
-множество уже присутствующих в таблице текстов, и совпадающие по хешу примеры
-пропускаются. Это позволяет безопасно перезапускать засев и дозасевать датасет
-новыми строками, не плодя копии.
+Идемпотентность обеспечивается на стороне базы уникальным индексом по
+нормализованному тексту примера и вставкой с оговоркой ON CONFLICT DO NOTHING.
+Прежняя схема читала всё множество текстов таблицы в память и сравнивала на стороне
+клиента, из-за чего два параллельных запуска засева могли одновременно увидеть
+отсутствие примера и вставить дубликаты. Перенос идемпотентности в уникальный индекс
+делает засев безопасным при повторных и параллельных запусках: конфликт разрешает
+сама база атомарно.
 
-Подключение к Postgres берётся из той же переменной окружения POSTGRES_DSN, что
-использует тренер train.py и recorder store.py, поэтому засев работает в том же
-кластерном Postgres (база krokki). Доступ к базе инъектируется через параметр
-connect, что позволяет проверять логику модульно без сети, подменяя соединение
-заглушкой.
+Подключение к Postgres берётся из переменной окружения SENTINEL_POSTGRES_DSN, той же,
+что использует тренер train.py и recorder store.py, поэтому засев работает в том же
+кластерном Postgres. Способ открытия соединения инъектируется через параметр connect,
+что позволяет проверять логику модульно без сети, подменяя соединение заглушкой.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 
 BRANCHES = ("logs", "alerts", "network", "anomalies", "dependencies", "releases")
 
-DSN = os.getenv("POSTGRES_DSN", "")
+DSN = os.getenv("SENTINEL_POSTGRES_DSN", "")
 SEED_PATH = os.getenv(
-    "RCA_SEED_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed_dataset.jsonl"))
+    "SENTINEL_SEED_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed_dataset.jsonl"))
 SEED_SOURCE = "seed"
 
-
-def _text_hash(text: str) -> str:
-    """Хеш нормализованного текста примера для сравнения на дубликаты. Нормализация
-    приводит регистр к нижнему и схлопывает окружающие пробелы, чтобы отличия только
-    в регистре или в крайних пробелах не порождали дубликат."""
-    norm = " ".join((text or "").lower().split())
-    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+# Определение таблицы и уникального индекса. Схема создаётся идемпотентно, чтобы засев
+# на чистой базе не требовал отдельного шага миграции. Индекс по нормализованному
+# тексту это тот же ключ идемпотентности, что использует recorder боевого каскада.
+_SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS rca_route_examples (
+        id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        query       text NOT NULL,
+        labels      text[] NOT NULL,
+        source      text NOT NULL DEFAULT 'llm',
+        query_norm  text GENERATED ALWAYS AS (lower(btrim(query))) STORED,
+        created_at  timestamptz NOT NULL DEFAULT now(),
+        trained_at  timestamptz
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS rca_route_examples_query_norm_uq "
+    "ON rca_route_examples (query_norm)",
+)
 
 
 def load_seed(path: str = SEED_PATH) -> list:
@@ -60,12 +71,10 @@ def load_seed(path: str = SEED_PATH) -> list:
     return items
 
 
-def _existing_hashes(cur) -> set:
-    """Множество хешей текстов, уже присутствующих в rca_route_examples. Считается по
-    полю query, тем же, куда пишут recorder и засев, поэтому дубли ловятся независимо
-    от источника (seed, llm или human)."""
-    cur.execute("SELECT query FROM rca_route_examples")
-    return {_text_hash(row[0]) for row in cur.fetchall()}
+def _ensure_schema(cur) -> None:
+    """Идемпотентно создаёт таблицу и уникальный индекс идемпотентности."""
+    for stmt in _SCHEMA:
+        cur.execute(stmt)
 
 
 def seed(path: str = SEED_PATH, dsn: str = DSN, connect=None) -> dict:
@@ -73,9 +82,11 @@ def seed(path: str = SEED_PATH, dsn: str = DSN, connect=None) -> dict:
     вида {total, inserted, skipped}. Параметр connect позволяет подменить способ
     открытия соединения (для тестов), по умолчанию используется psycopg2.connect.
 
-    Идемпотентность: перед вставкой считывается множество уже имеющихся текстов по
-    хешу, и совпадающие примеры пропускаются. В пределах одного запуска повторяющиеся
-    тексты внутри самого датасета также вставляются лишь однажды."""
+    Идемпотентность обеспечивает база: вставка идёт с оговоркой ON CONFLICT DO NOTHING
+    по уникальному индексу нормализованного текста, поэтому повторная и параллельная
+    вставка одного и того же примера не создаёт дубликата. Число фактически вставленных
+    строк определяется по признаку вставки, возвращаемому RETURNING, а разница с общим
+    числом примеров относится к пропущенным (уже присутствующим)."""
     items = load_seed(path)
     if connect is None:
         import psycopg2
@@ -85,18 +96,17 @@ def seed(path: str = SEED_PATH, dsn: str = DSN, connect=None) -> dict:
     inserted = skipped = 0
     try:
         with conn, conn.cursor() as cur:
-            seen = _existing_hashes(cur)
+            _ensure_schema(cur)
             for text, labels in items:
-                h = _text_hash(text)
-                if h in seen:
-                    skipped += 1
-                    continue
                 cur.execute(
-                    "INSERT INTO rca_route_examples (query, labels, source) VALUES (%s, %s, %s)",
+                    "INSERT INTO rca_route_examples (query, labels, source) "
+                    "VALUES (%s, %s, %s) ON CONFLICT (query_norm) DO NOTHING RETURNING id",
                     (text, list(labels), SEED_SOURCE),
                 )
-                seen.add(h)
-                inserted += 1
+                if cur.fetchone() is not None:
+                    inserted += 1
+                else:
+                    skipped += 1
     finally:
         conn.close()
     return {"total": len(items), "inserted": inserted, "skipped": skipped}
@@ -104,7 +114,7 @@ def seed(path: str = SEED_PATH, dsn: str = DSN, connect=None) -> dict:
 
 def main() -> None:
     if not DSN:
-        print(json.dumps({"msg": "skip: no POSTGRES_DSN"}, ensure_ascii=False), flush=True)
+        print(json.dumps({"msg": "skip: no SENTINEL_POSTGRES_DSN"}, ensure_ascii=False), flush=True)
         return
     summary = seed()
     print(json.dumps({"msg": "seed done", **summary}, ensure_ascii=False), flush=True)

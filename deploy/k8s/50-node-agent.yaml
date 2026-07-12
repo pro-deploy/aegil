@@ -1,61 +1,83 @@
-# Привилегированный node-agent (ADR-0041, спецификация agent-panel-agentic-devops, раздел 2).
-# DaemonSet поднимает по одному поду на КАЖДОМ узле кластера. Под запущен привилегированным и с
-# hostPID, входит в пространство имён хоста через nsenter и даёт панели agent-panel возможность
-# исполнять произвольные команды на самих узлах (чистка диска, prune docker и containerd, df, top,
-# kill процесса, systemctl). Это god-mode-поверхность по отношению к узлу, поэтому она закрыта
-# общим секретом NODEAGENT_TOKEN, слушается только внутрикластерно и НЕ публикуется наружу: у неё
-# нет Ingress и нет Service типа LoadBalancer.
+# Привилегированный узловой агент (node-agent) продукта kube-sentinel.
+# DaemonSet поднимает по одному поду на каждом узле кластера. Под входит в пространство имён хоста
+# через nsenter (см. securityContext ниже) и даёт панели агента возможность исполнять команды
+# эксплуатации на самих узлах (чистка диска, prune образов docker и containerd, df, top, снятие
+# процесса, systemctl). Это god-mode-поверхность по отношению к узлу, поэтому доступ к ней закрыт
+# сразу несколькими рамками: общий секрет проверяется за постоянное время; порт узла НЕ публикуется
+# (нет hostPort и hostNetwork), панель ходит только по адресу пода через Service; сетевая политика
+# NetworkPolicy пропускает входящие на порт агента ТОЛЬКО от пода панели по её метке.
 #
-# ПЕРЕД ПРИМЕНЕНИЕМ создать секрет с общим токеном доступа (тот же токен обязателен и панели):
-#   kubectl -n krokki create secret generic nodeagent-secrets \
-#     --from-literal=NODEAGENT_TOKEN=$(openssl rand -hex 24)
-# Тот же самый токен положить в секрет панели agent-panel, чтобы она предъявляла его в каждом
-# запросе к node-agent (иначе /run отвечает 401 и ничего не исполняет):
-#   TOK=$(kubectl -n krokki get secret nodeagent-secrets -o jsonpath='{.data.NODEAGENT_TOKEN}' | base64 -d)
-#   kubectl -n krokki patch secret agent-panel-secrets --type merge \
-#     -p "{\"stringData\":{\"NODEAGENT_TOKEN\":\"$TOK\"}}"
-# Образ собрать и опубликовать в Nexus как остальные (deploy/build.sh, группа control).
+# ПЕРЕД ПРИМЕНЕНИЕМ создать секрет с общим токеном доступа в пространстве имён продукта. Тот же токен
+# обязателен и панели, чтобы она предъявляла его в заголовке X-NodeAgent-Token каждого запроса
+# (иначе /run отвечает 401 и ничего не исполняет):
+#   kubectl -n sentinel create secret generic nodeagent-secrets \
+#     --from-literal=SENTINEL_NODEAGENT_TOKEN=$(openssl rand -hex 24)
+# Тот же токен положить в секрет панели под ключом SENTINEL_NODEAGENT_TOKEN.
+#
+# Селектор узлов и допуски (tolerations) параметризованы плейсхолдерами и подставляются под
+# конкретный кластер при установке (например через Helm). По умолчанию DaemonSet встаёт на все
+# рабочие узлы; при необходимости покрыть узлы под taint-ами (в том числе control-plane) владелец
+# задаёт нужные допуски явно, а не разрешает все taint-ы без разбора.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: node-agent
   namespace: sentinel
+  labels:
+    app.kubernetes.io/name: node-agent
+    app.kubernetes.io/part-of: kube-sentinel
 spec:
   selector: {matchLabels: {app: node-agent}}
   template:
     metadata:
-      labels: {app: node-agent}
+      labels:
+        app: node-agent
+        app.kubernetes.io/name: node-agent
+        app.kubernetes.io/part-of: kube-sentinel
     spec:
-      # hostNetwork сознательно НЕ включаем: иначе podIP равен адресу узла (у домашнего GPU-узла
-      # это его LAN-адрес, не маршрутизируемый с облачного управляющего узла), и панель не смогла
-      # бы дотянуться до node-agent на GPU-узле. Без hostNetwork под получает обычный podIP из
-      # pod-CIDR, который flannel маршрутизирует между узлами по WireGuard, ровно как для asr, llm
-      # и прочих ML-подов. На вход в пространства имён хоста это не влияет: hostPID даёт видимость
-      # PID 1, а nsenter -t 1 входит в mount, uts, ipc и net хоста через /proc/1/ns/*.
-      # hostPID: видимость процессов хоста, необходима для входа в пространство имён процесса PID 1.
+      # Токен служебной учётной записи не монтируется: привилегированному поду с узловым доступом не
+      # нужен токен default-SA, а его наличие лишь расширяет поверхность (кража токена из-под root).
+      automountServiceAccountToken: false
+      # hostPID даёт видимость процессов хоста, включая PID 1. Она необходима, чтобы nsenter -t 1
+      # вошёл в пространства имён хоста через /proc/1/ns/*. hostNetwork НЕ включаем: под получает
+      # обычный адрес из pod-CIDR, маршрутизируемый между узлами, а порт узла не занимается.
       hostPID: true
-      # Toleration ко ВСЕМ taint-ам, чтобы под встал и на GPU-узле, и на управляющем узле, включая
-      # taint панели узлов и taint control-plane. Пустой оператор Exists без ключа совпадает с
-      # любым taint любого эффекта.
-      tolerations:
-        - operator: Exists
+      # ПЛЕЙСХОЛДЕР селектора узлов: подставляется под конкретный кластер при установке. По умолчанию
+      # без ограничений (DaemonSet встаёт на все рабочие узлы). Зашитых меток исходного кластера нет.
+      # nodeSelector: {}
+      # ПЛЕЙСХОЛДЕР допусков: по умолчанию пусто (только рабочие узлы). Чтобы покрыть узлы под taint,
+      # владелец добавляет конкретные допуски явно, а не оператор Exists ко всем taint-ам подряд.
+      # tolerations: []
       containers:
         - name: node-agent
-          image: REGISTRY_PLACEHOLDER/kube-sentinel/node-agent:0.13.0
+          image: REGISTRY_PLACEHOLDER/kube-sentinel/node-agent:VERSION_PLACEHOLDER
           imagePullPolicy: IfNotPresent
           securityContext:
-            # Привилегированный контейнер: полный доступ к узлу нужен, чтобы через nsenter входить
-            # в пространство имён хоста и исполнять команды с правами рута.
-            privileged: true
-          ports: [{containerPort: 9110, hostPort: 9110}]
+            # Полного privileged: true намеренно избегаем. Для входа через nsenter в пространства
+            # имён mount, uts, ipc и net процесса PID 1 достаточно hostPID: true плюс капабилити
+            # SYS_ADMIN (операция setns над этими пространствами), а SYS_PTRACE нужен для операций
+            # над процессами хоста (снятие зависшего процесса, чтение /proc чужих процессов).
+            # Файловую систему контейнера при этом оставляем только для чтения, эскалацию привилегий
+            # запрещаем, все прочие капабилити сбрасываем. Если для конкретной операции строго
+            # понадобится полный privileged, это обосновывается отдельно и включается точечно.
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["SYS_ADMIN", "SYS_PTRACE"]
+          # Порт узла НЕ публикуется: только containerPort, доступный по адресу пода через Service.
+          # Публикация hostPort вывела бы god-mode-эндпоинт на все интерфейсы узла, включая
+          # локальную сеть и управляющий узел, что недопустимо.
+          ports: [{containerPort: 9110, name: http}]
           env:
             # Имя узла через downward API: возвращается в ответах и попадает в логи и аудит.
-            - name: NODE_NAME
+            - name: SENTINEL_NODE_NAME
               valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
             # Общий секрет доступа: без него /run fail-closed отклоняет все запросы.
-            - name: NODEAGENT_TOKEN
-              valueFrom: {secretKeyRef: {name: nodeagent-secrets, key: NODEAGENT_TOKEN}}
-            - {name: NODEAGENT_PORT, value: "9110"}
+            - name: SENTINEL_NODEAGENT_TOKEN
+              valueFrom: {secretKeyRef: {name: nodeagent-secrets, key: SENTINEL_NODEAGENT_TOKEN}}
+            - {name: SENTINEL_NODEAGENT_PORT, value: "9110"}
           readinessProbe:
             httpGet: {path: /health, port: 9110}
             initialDelaySeconds: 5
@@ -64,3 +86,44 @@ spec:
           resources:
             requests: {cpu: "10m", memory: 32Mi}
             limits: {memory: 96Mi}
+---
+# Внутрикластерный Service для доступа панели к node-agent по адресу пода. Тип ClusterIP, наружу
+# ничего не публикуется. Панель обращается к конкретному поду узла (например через endpoints этого
+# Service), порт узла при этом не занят.
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-agent
+  namespace: sentinel
+  labels:
+    app.kubernetes.io/name: node-agent
+    app.kubernetes.io/part-of: kube-sentinel
+spec:
+  clusterIP: None
+  selector: {app: node-agent}
+  ports:
+    - {name: http, port: 9110, targetPort: 9110}
+---
+# Сетевая политика: входящий трафик на порт node-agent разрешён ТОЛЬКО от пода панели (по метке
+# app: agent-panel в том же пространстве имён), больше ни от кого. Всё прочее отбрасывается, поэтому
+# god-mode-эндпоинт недостижим ни из локальной сети, ни от произвольного пода кластера. Политика
+# требует сетевого плагина с поддержкой NetworkPolicy; при его отсутствии полагаемся на секрет и
+# отсутствие публикации порта, а сетевую политику дублируем средствами плагина.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: node-agent-allow-panel
+  namespace: sentinel
+  labels:
+    app.kubernetes.io/name: node-agent
+    app.kubernetes.io/part-of: kube-sentinel
+spec:
+  podSelector:
+    matchLabels: {app: node-agent}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: agent-panel}
+      ports:
+        - {protocol: TCP, port: 9110}

@@ -1,8 +1,9 @@
-# Тренер классификатора маршрутизации SetFit (ADR-0032, Часть B; активное обучение).
-# CronJob на GPU-узле (мощнее по процессору и памяти), обучение по умолчанию на
-# процессоре, чтобы не конкурировать с vLLM за видеопамять. Запускается ежечасно, но
-# train.py сам решает по порогу новых примеров, дообучать или выйти. Читает примеры
-# из Postgres и настройки S3 из общих config и secrets, выгружает модель в S3.
+# Тренер классификатора маршрутизации SetFit (активное обучение). CronJob, обучение на
+# процессоре, чтобы не конкурировать за видеопамять. Запускается ежечасно, но train.py сам
+# решает по порогу новых примеров, дообучать или выйти. Читает примеры из Postgres и настройки
+# S3 из секрета sentinel-secrets, выгружает обученную модель в S3. Узел не фиксируется:
+# на чужом кластере планировщик размещает под сам; при необходимости привязку к узлу и
+# tolerations задаёт владелец через значения чарта.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -18,23 +19,26 @@ spec:
       backoffLimit: 1
       template:
         spec:
-          nodeSelector: {node-role.kubernetes.io/role: gpu}
-          # GPU-узел затейнчен krokki.io/gpu=true:NoSchedule; без парной toleration под
-          # тренера навсегда останется Pending и контур самообучения SetFit не замкнётся.
-          # Обучение при этом идёт на CPU (RCA_TRAIN_DEVICE=cpu), видеопамять не занимая.
-          tolerations: [{key: krokki.io/gpu, operator: Equal, value: "true", effect: NoSchedule}]
+          automountServiceAccountToken: false
           restartPolicy: Never
           containers:
             - name: rca-trainer
-              image: REGISTRY_PLACEHOLDER/kube-sentinel/rca-trainer:0.13.2
+              image: REGISTRY_PLACEHOLDER/kube-sentinel/rca-trainer:0.1.0
               imagePullPolicy: IfNotPresent
-              envFrom:
-                - configMapRef: {name: krokki-config}
-                - secretRef: {name: krokki-secrets}
               env:
-                - {name: RCA_TRAIN_DEVICE, value: "cpu"}
-                - {name: RCA_TRAIN_MIN_NEW, value: "8"}
-                - {name: RCA_MODEL_KEY, value: "rca/setfit-router.tar.gz"}
+                - name: SENTINEL_POSTGRES_DSN
+                  valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_POSTGRES_DSN}}
+                - name: SENTINEL_S3_ENDPOINT
+                  valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_S3_ENDPOINT}}
+                - name: SENTINEL_S3_ACCESS_KEY
+                  valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_S3_ACCESS_KEY}}
+                - name: SENTINEL_S3_SECRET_KEY
+                  valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_S3_SECRET_KEY}}
+                - name: SENTINEL_S3_BUCKET
+                  valueFrom: {secretKeyRef: {name: sentinel-secrets, key: SENTINEL_S3_BUCKET}}
+                - {name: SENTINEL_TRAIN_DEVICE, value: "cpu"}
+                - {name: SENTINEL_TRAIN_MIN_NEW, value: "8"}
+                - {name: SENTINEL_MODEL_KEY_PREFIX, value: "rca/setfit-router.tar.gz"}
               resources:
                 requests: {cpu: "1", memory: 2Gi}
                 limits: {memory: 6Gi}

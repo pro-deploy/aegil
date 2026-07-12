@@ -1,12 +1,13 @@
 FROM python:3.11-slim
 WORKDIR /app
-# CPU-колесо torch ставим первым, чтобы setfit не притянул тяжёлую CUDA-сборку
-# (обучение rubert-tiny2 идёт на процессоре, не конкурируя с vLLM за видеопамять).
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+# Колесо torch (CPU) ставим первым и с запиненной версией, чтобы setfit не притянул
+# тяжёлую сборку с поддержкой CUDA (обучение rubert-tiny2 идёт на процессоре) и чтобы
+# сборка образа была воспроизводимой: по одному тегу образа всегда ясен точный torch.
+RUN pip install --no-cache-dir torch==2.4.1 --index-url https://download.pytorch.org/whl/cpu
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY train.py .
-# Инструмент разового засева холодного старта и сам датасет (ADR-0041): seed_load.py вставляет
+# Инструмент разового засева холодного старта и сам датасет: seed_load.py вставляет
 # размеченные примеры в rca_route_examples, тренер затем обучает на них SetFit.
 COPY seed_load.py seed_dataset.jsonl ./
 # Кэш моделей во временный каталог (непривилегированный пользователь).

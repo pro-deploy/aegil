@@ -1,7 +1,7 @@
-# Хранилище логов Loki (ADR-0032, A.9). Монолитный режим, файловое хранилище,
-# ретенция восемь суток (192 часа) под baseline с недельным лагом. Живёт на
-# управляющем узле рядом с приложением; ML-узел не затрагивается. Лимиты выставлены
-# скромно под малый объём (до ~5 млн строк в сутки).
+# Хранилище логов Loki. Монолитный режим, файловое хранилище, ретенция восемь суток
+# (192 часа). Лимиты выставлены скромно под малый объём (до ~5 млн строк в сутки).
+# Аутентификации у Loki нет (auth_enabled: false), поэтому доступ к порту 3100 закрыт
+# сетевой политикой: писать может только Alloy, читать только панель и RCA.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -80,7 +80,7 @@ spec:
     metadata:
       labels: {app: loki}
     spec:
-      nodeSelector: {node-role.kubernetes.io/role: control}
+      automountServiceAccountToken: false
       securityContext: {fsGroup: 10001}
       containers:
         - name: loki
@@ -91,6 +91,10 @@ spec:
             httpGet: {path: /ready, port: 3100}
             initialDelaySeconds: 15
             periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /ready, port: 3100}
+            initialDelaySeconds: 60
+            periodSeconds: 30
           volumeMounts:
             - {name: config, mountPath: /etc/loki}
             - {name: data, mountPath: /loki}
@@ -102,3 +106,22 @@ spec:
           configMap: {name: loki-config}
         - name: data
           persistentVolumeClaim: {claimName: loki-data}
+---
+# Сетевая политика Loki. У Loki отключена аутентификация, поэтому его порт закрывается на
+# сетевом уровне: входящий трафик на 3100 разрешён только от Alloy (запись логов), панели
+# агента и сервиса RCA (чтение окна логов). Любой другой под чужого кластера доступа не имеет.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loki
+  namespace: sentinel
+spec:
+  podSelector: {matchLabels: {app: loki}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app: alloy}}
+        - podSelector: {matchLabels: {app: agent-panel}}
+        - podSelector: {matchLabels: {app: rca}}
+      ports:
+        - {protocol: TCP, port: 3100}

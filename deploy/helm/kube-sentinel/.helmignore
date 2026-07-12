@@ -1,0 +1,8 @@
+# Файлы, не включаемые в упакованный чарт.
+.DS_Store
+.git/
+.gitignore
+*.tmp
+*.bak
+*.orig
+*.swp

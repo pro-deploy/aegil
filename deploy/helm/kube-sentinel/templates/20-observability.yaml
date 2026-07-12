@@ -1,0 +1,667 @@
+{{- if .Values.observability.enabled }}
+{{- $ns := include "kube-sentinel.namespace" . -}}
+{{- $target := include "kube-sentinel.targetNamespace" . -}}
+{{- $obs := .Values.observability -}}
+{{- /* Общее размещение подов стека наблюдаемости. */ -}}
+{{- if $obs.loki.enabled }}
+# --- Loki: хранилище логов, монолитный режим, аутентификация отключена ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+data:
+  loki.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9095
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    limits_config:
+      retention_period: {{ $obs.loki.retention }}
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      ingestion_rate_mb: 8
+      ingestion_burst_size_mb: 16
+      max_streams_per_user: 10000
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+    analytics:
+      reporting_enabled: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  selector: {app: loki}
+  ports: [{name: http, port: 3100, targetPort: 3100}]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-data
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if $obs.loki.storageClass }}
+  storageClassName: {{ $obs.loki.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests: {storage: {{ $obs.loki.size }}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: loki}}
+  template:
+    metadata:
+      labels: {app: loki}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {fsGroup: 10001}
+{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+      {{- with $obs.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with $obs.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with $obs.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      containers:
+        - name: loki
+          image: {{ $obs.loki.image }}
+          args: ["-config.file=/etc/loki/loki.yaml"]
+          ports: [{containerPort: 3100}]
+          readinessProbe:
+            httpGet: {path: /ready, port: 3100}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /ready, port: 3100}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          volumeMounts:
+            - {name: config, mountPath: /etc/loki}
+            - {name: data, mountPath: /loki}
+          resources:
+{{ toYaml $obs.loki.resources | indent 12 }}
+      volumes:
+        - name: config
+          configMap: {name: loki-config}
+        - name: data
+          persistentVolumeClaim: {claimName: loki-data}
+{{- if .Values.networkPolicies.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loki
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  podSelector: {matchLabels: {app: loki}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app: alloy}}
+        - podSelector: {matchLabels: {app: agent-panel}}
+        - podSelector: {matchLabels: {app: rca}}
+      ports:
+        - {protocol: TCP, port: 3100}
+{{- end }}
+{{- end }}
+{{- if $obs.alloy.enabled }}
+---
+# --- Alloy: сбор логов подов, ограничен целевым наблюдаемым пространством имён ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $ns }}-alloy
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, namespaces, nodes]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $ns }}-alloy
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $ns }}-alloy
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: {{ $ns }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+data:
+  config.alloy: |
+    discovery.kubernetes "pods" {
+      role = "pod"
+      namespaces {
+        names = [{{ $target | quote }}]
+      }
+    }
+
+    discovery.relabel "pods" {
+      targets = discovery.kubernetes.pods.targets
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_node_name"]
+        target_label  = "node"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app"]
+        target_label  = "app"
+      }
+    }
+
+    loki.source.kubernetes "pods" {
+      targets    = discovery.relabel.pods.output
+      forward_to = [loki.process.pii.receiver]
+    }
+
+    loki.process "pii" {
+      stage.replace {
+        expression = "(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}"
+        replace    = "<email>"
+      }
+      stage.replace {
+        expression = "\\+?\\d[\\d\\-\\s()]{9,}\\d"
+        replace    = "<phone>"
+      }
+      forward_to = [loki.write.default.receiver]
+    }
+
+    loki.write "default" {
+      endpoint {
+        url = "http://loki:3100/loki/api/v1/push"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: alloy}}
+  template:
+    metadata:
+      labels: {app: alloy}
+    spec:
+      serviceAccountName: alloy
+{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+      {{- with $obs.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with $obs.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with $obs.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      containers:
+        - name: alloy
+          image: {{ $obs.alloy.image }}
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy
+            - --server.http.listen-addr=0.0.0.0:12345
+          ports: [{containerPort: 12345, name: http}]
+          readinessProbe:
+            httpGet: {path: /-/ready, port: 12345}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /-/ready, port: 12345}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - {name: config, mountPath: /etc/alloy}
+            - {name: data, mountPath: /var/lib/alloy}
+          resources:
+{{ toYaml $obs.alloy.resources | indent 12 }}
+      volumes:
+        - name: config
+          configMap: {name: alloy-config}
+        - name: data
+          emptyDir: {}
+{{- end }}
+{{- if $obs.tempo.enabled }}
+---
+# --- Tempo: хранилище трасс, монолитный режим ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+data:
+  tempo.yaml: |
+    server:
+      http_listen_port: 3200
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+    ingester:
+      max_block_duration: 5m
+    compactor:
+      compaction:
+        block_retention: 72h
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/blocks
+        wal:
+          path: /var/tempo/wal
+    usage_report:
+      reporting_enabled: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  selector: {app: tempo}
+  ports:
+    - {name: http, port: 3200, targetPort: 3200}
+    - {name: otlp-grpc, port: 4317, targetPort: 4317}
+    - {name: otlp-http, port: 4318, targetPort: 4318}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tempo-data
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if $obs.tempo.storageClass }}
+  storageClassName: {{ $obs.tempo.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests: {storage: {{ $obs.tempo.size }}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: tempo}}
+  template:
+    metadata:
+      labels: {app: tempo}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {fsGroup: 10001}
+{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+      {{- with $obs.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with $obs.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with $obs.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      containers:
+        - name: tempo
+          image: {{ $obs.tempo.image }}
+          args: ["-config.file=/etc/tempo/tempo.yaml"]
+          ports:
+            - {containerPort: 3200}
+            - {containerPort: 4317}
+            - {containerPort: 4318}
+          readinessProbe:
+            httpGet: {path: /ready, port: 3200}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /ready, port: 3200}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          volumeMounts:
+            - {name: config, mountPath: /etc/tempo}
+            - {name: data, mountPath: /var/tempo}
+          resources:
+{{ toYaml $obs.tempo.resources | indent 12 }}
+      volumes:
+        - name: config
+          configMap: {name: tempo-config}
+        - name: data
+          persistentVolumeClaim: {claimName: tempo-data}
+{{- end }}
+{{- if $obs.otelCollector.enabled }}
+---
+# --- OpenTelemetry Collector: приём трасс OTLP, пересылка в Tempo ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      batch: {}
+      memory_limiter:
+        check_interval: 5s
+        limit_mib: 200
+        spike_limit_mib: 50
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    exporters:
+      otlp/tempo:
+        endpoint: tempo:4317
+        tls:
+          insecure: true
+    service:
+      extensions: [health_check]
+      telemetry:
+        metrics:
+          level: none
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlp/tempo]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  selector: {app: otel-collector}
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: 4317}
+    - {name: otlp-http, port: 4318, targetPort: 4318}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: otel-collector}}
+  template:
+    metadata:
+      labels: {app: otel-collector}
+    spec:
+      automountServiceAccountToken: false
+{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+      {{- with $obs.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with $obs.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with $obs.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      containers:
+        - name: otel-collector
+          image: {{ $obs.otelCollector.image }}
+          args: ["--config=/etc/otel/config.yaml"]
+          ports:
+            - {containerPort: 4317}
+            - {containerPort: 4318}
+            - {containerPort: 13133, name: health}
+          readinessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - {name: config, mountPath: /etc/otel}
+          resources:
+{{ toYaml $obs.otelCollector.resources | indent 12 }}
+      volumes:
+        - name: config
+          configMap: {name: otel-collector-config}
+{{- end }}
+{{- if $obs.grafana.enabled }}
+---
+# --- Grafana: обзор логов и трасс, связанных по trace_id ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        uid: loki
+        access: proxy
+        url: http://loki:3100
+        jsonData:
+          derivedFields:
+            - name: trace_id
+              matcherRegex: '"trace_id":"(\w+)"'
+              datasourceUid: tempo
+              url: '$${__value.raw}'
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        access: proxy
+        url: http://tempo:3200
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            filterByTraceID: true
+            spanStartTimeShift: -1h
+            spanEndTimeShift: 1h
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  selector: {app: grafana}
+  ports: [{name: http, port: 3000, targetPort: 3000}]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if $obs.grafana.storageClass }}
+  storageClassName: {{ $obs.grafana.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests: {storage: {{ $obs.grafana.size }}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: {{ $ns }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: grafana}}
+  template:
+    metadata:
+      labels: {app: grafana}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {fsGroup: 472}
+{{- include "kube-sentinel.imagePullSecrets" . | indent 6 }}
+      {{- with $obs.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with $obs.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with $obs.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      containers:
+        - name: grafana
+          image: {{ $obs.grafana.image }}
+          ports: [{containerPort: 3000}]
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom: {secretKeyRef: {name: {{ .Values.secrets.grafana.name }}, key: {{ .Values.secrets.grafana.userKey }}}}
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .Values.secrets.grafana.name }}, key: {{ .Values.secrets.grafana.passwordKey }}}}
+            - {name: GF_ANALYTICS_REPORTING_ENABLED, value: "false"}
+            - {name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: "false"}
+          readinessProbe:
+            httpGet: {path: /api/health, port: 3000}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /api/health, port: 3000}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          volumeMounts:
+            - {name: datasources, mountPath: /etc/grafana/provisioning/datasources}
+            - {name: data, mountPath: /var/lib/grafana}
+          resources:
+{{ toYaml $obs.grafana.resources | indent 12 }}
+      volumes:
+        - name: datasources
+          configMap: {name: grafana-datasources}
+        - name: data
+          persistentVolumeClaim: {claimName: grafana-data}
+{{- end }}
+{{- end }}

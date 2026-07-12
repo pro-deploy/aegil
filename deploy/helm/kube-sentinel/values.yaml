@@ -1,0 +1,191 @@
+# Значения чарта kube-sentinel. Параметризует всё, что перечислено в docs/CONVENTIONS.md:
+# реестр и единую версию образов, пространство установки и целевое наблюдаемое пространство
+# отдельно, размещение подов по компонентам, класс и размеры хранилища, включение стека
+# наблюдаемости флагом, имена и ключи секретов, полный контур переменных SENTINEL_, Postgres и
+# S3, сетевые политики, imagePullSecrets, ресурсы, логин и пароль Grafana.
+
+# --- Реестр и единая версия образов -------------------------------------------------------------
+image:
+  # Адрес реестра, обязателен (например registry.example.com:5000). Совпадает с REGISTRY в build.sh.
+  registry: registry.example.com:5000
+  # Префикс репозитория внутри реестра. Полное имя образа: registry/repository/<компонент>:<tag>.
+  repository: kube-sentinel
+  # Единый тег на все образы продукта. Пусто означает: использовать Chart.appVersion. Задавайте
+  # тот же тег, под которым собрано build.sh, чтобы номер версии был согласован везде.
+  tag: ""
+  pullPolicy: IfNotPresent
+# Секреты доступа к приватному реестру (список имён). Пусто, если реестр публичный.
+imagePullSecrets: []
+#  - name: registry-creds
+
+# --- Пространства имён --------------------------------------------------------------------------
+namespace:
+  # Пространство, куда СТАВИТСЯ сам продукт. Обычно это release namespace helm.
+  install: sentinel
+  # Создавать ли ресурс Namespace из чарта (обычно namespace создаёт helm --create-namespace,
+  # тогда оставьте false, чтобы не было двойного владения ресурсом).
+  create: false
+  # Целевое НАБЛЮДАЕМОЕ и управляемое пространство имён. Отдельно от пространства установки: агент
+  # может стоять в sentinel, а следить за пространством приложения заказчика. Пусто означает
+  # «то же, что install».
+  target: ""
+
+# --- Секреты ------------------------------------------------------------------------------------
+secrets:
+  # Основной секрет продукта. Чарт его НЕ создаёт (в нём чувствительные значения); владелец создаёт
+  # секрет с этим именем и перечисленными ключами до установки. Имена и ключи согласованы с
+  # манифестами, README и .env.example.
+  main:
+    name: sentinel-secrets
+    keys:
+      operators: SENTINEL_OPERATORS
+      nodeagentToken: SENTINEL_NODEAGENT_TOKEN
+      llmApiKey: SENTINEL_LLM_API_KEY
+      postgresDsn: SENTINEL_POSTGRES_DSN
+      s3Endpoint: SENTINEL_S3_ENDPOINT
+      s3AccessKey: SENTINEL_S3_ACCESS_KEY
+      s3SecretKey: SENTINEL_S3_SECRET_KEY
+      s3Bucket: SENTINEL_S3_BUCKET
+  # Секрет Grafana с логином и паролем администратора. Аналогично создаётся владельцем.
+  grafana:
+    name: grafana-admin
+    userKey: user
+    passwordKey: password
+
+# --- Языковая модель агентного цикла ------------------------------------------------------------
+llm:
+  provider: anthropic          # anthropic или openai-совместимый
+  model: claude-opus-4-8     # идентификатор модели
+  baseUrl: ""                  # пусто для облачной модели; адрес своей модели в кластере иначе
+
+# --- Открытые серверы MCP (дополнительные инструменты агента) ------------------------------------
+mcp:
+  # JSON-список серверов [{name,url,read_only,token}]. Пусто выключает MCP. read_only:true только
+  # для читающих серверов наблюдаемости; прочие требуют подтверждения оператора.
+  servers: ""
+
+# --- Канал самообновления продукта --------------------------------------------------------------
+update:
+  # Адрес канала выпусков (JSON {version,image_tag,notes}). Пусто выключает проверку обновлений.
+  channelUrl: ""
+  # Деплойменты для обновления образов при подтверждённом владельцем обновлении (через запятую).
+  # Пусто означает, что обновление ничего не тронет. Применение всегда требует подтверждения.
+  deployments: ""
+
+# --- Уровень автономии и политика ---------------------------------------------------------------
+autonomy: observe              # observe | safe_repair | full
+policy:
+  restartAllowlist: ""                                  # сервисы для автономного перезапуска
+  restartDenylist: "postgres,redis,minio,etcd,vault"    # запрещённые к перезапуску всегда
+  protectedPatterns: ""                                 # ресурсы и пути, всегда за подтверждением
+  nodeRoleLabel: node-role.kubernetes.io/role           # метка роли узла для дружеских имён
+
+# --- Панель агента ------------------------------------------------------------------------------
+panel:
+  replicas: 1
+  nodeagentTimeout: 30
+  # Размещение пода панели по компонентам (пусто по умолчанию, на чужом кластере планировщик сам).
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources:
+    requests: {cpu: "50m", memory: 96Mi}
+    limits: {memory: 256Mi}
+  # Постоянный том состояния панели (аудит, гарды, лента инцидентов, режим агента).
+  persistence:
+    size: 1Gi
+    # Класс хранилища. Пусто означает класс по умолчанию целевого кластера (не k3s-специфично).
+    storageClass: ""
+
+# --- Сервис RCA ---------------------------------------------------------------------------------
+rca:
+  enabled: true
+  replicas: 1
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  modelKeyPrefix: rca/setfit-router.tar.gz
+  resources:
+    requests: {cpu: "250m", memory: 768Mi}
+    limits: {memory: 2Gi}
+
+# --- Тренер RCA (активное обучение) -------------------------------------------------------------
+rcaTrainer:
+  enabled: true
+  schedule: "0 * * * *"
+  trainDevice: cpu
+  trainMinNew: 8
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources:
+    requests: {cpu: "1", memory: 2Gi}
+    limits: {memory: 6Gi}
+
+# --- Узловой агент (node-agent) -----------------------------------------------------------------
+# ВНИМАНИЕ: манифест узлового агента финализирует другой агент (модель доступа и транспорт
+# переписываются). Здесь оставлен параметризованный ПЛЕЙСХОЛДЕР, помеченный TODO, включённый в
+# сборку значений, но выключенный по умолчанию, чтобы чарт не выкатывал непроверенную god-mode
+# поверхность. Включайте enabled только после интеграции финального манифеста node-agent.
+nodeAgent:
+  enabled: false
+  port: 9110
+  tolerations:
+    - operator: Exists
+  resources:
+    requests: {cpu: "10m", memory: 32Mi}
+    limits: {memory: 96Mi}
+
+# --- Стек наблюдаемости (Loki, Tempo, Alloy, OpenTelemetry Collector, Grafana) -------------------
+# Весь стек включается или выключается одним флагом observability.enabled, отдельные компоненты
+# доуточняются своими флагами. На кластере, где Loki и Grafana уже есть, выключите стек и укажите
+# внешние адреса через env-контракт (loki/grafana URL).
+observability:
+  enabled: true
+  loki:
+    enabled: true
+    image: grafana/loki:3.1.1
+    retention: 192h
+    storageClass: ""
+    size: 20Gi
+    resources:
+      requests: {cpu: "250m", memory: 512Mi}
+      limits: {memory: 1Gi}
+  tempo:
+    enabled: true
+    image: grafana/tempo:2.5.0
+    storageClass: ""
+    size: 15Gi
+    resources:
+      requests: {cpu: "250m", memory: 512Mi}
+      limits: {memory: 1Gi}
+  alloy:
+    enabled: true
+    image: grafana/alloy:v1.3.1
+    resources:
+      requests: {cpu: "100m", memory: 128Mi}
+      limits: {memory: 256Mi}
+  otelCollector:
+    enabled: true
+    image: otel/opentelemetry-collector:0.104.0
+    resources:
+      requests: {cpu: "100m", memory: 128Mi}
+      limits: {memory: 256Mi}
+  grafana:
+    enabled: true
+    image: grafana/grafana:11.1.0
+    storageClass: ""
+    size: 2Gi
+    resources:
+      requests: {cpu: "100m", memory: 256Mi}
+      limits: {memory: 512Mi}
+  # Общее размещение подов стека наблюдаемости (применяется ко всем его компонентам).
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# --- Сетевые политики ---------------------------------------------------------------------------
+# Ограничивают доступ к неаутентифицированным портам (Loki, RCA) и закрывают панель. Включены по
+# умолчанию; на кластере без поддержки NetworkPolicy выключите.
+networkPolicies:
+  enabled: true

@@ -1,6 +1,5 @@
-# Сборщик OpenTelemetry (ADR-0032, A.7). Единая точка приёма трасс по OTLP от
-# сервисов приложения (в том числе спаны OpenLLMetry по вызовам модели), пакетирует
-# и пересылает в Tempo. Отдельный шов оставлен под будущее семплирование и
+# Сборщик OpenTelemetry. Единая точка приёма трасс по OTLP от сервисов приложения,
+# пакетирует и пересылает в Tempo. Отдельный шов оставлен под будущее семплирование и
 # обработку. Приложения шлют трассы на otel-collector:4317 (gRPC) / 4318 (HTTP).
 apiVersion: v1
 kind: ConfigMap
@@ -22,12 +21,16 @@ data:
         check_interval: 5s
         limit_mib: 200
         spike_limit_mib: 50
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
     exporters:
       otlp/tempo:
         endpoint: tempo:4317
         tls:
           insecure: true
     service:
+      extensions: [health_check]
       telemetry:
         metrics:
           level: none
@@ -60,7 +63,7 @@ spec:
     metadata:
       labels: {app: otel-collector}
     spec:
-      nodeSelector: {node-role.kubernetes.io/role: control}
+      automountServiceAccountToken: false
       containers:
         - name: otel-collector
           image: otel/opentelemetry-collector:0.104.0
@@ -68,6 +71,15 @@ spec:
           ports:
             - {containerPort: 4317}
             - {containerPort: 4318}
+            - {containerPort: 13133, name: health}
+          readinessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 30
+            periodSeconds: 30
           volumeMounts:
             - {name: config, mountPath: /etc/otel}
           resources:

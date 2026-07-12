@@ -10,3 +10,9 @@ __pycache__/
 *.tar.gz
 setfit-*/
 .cache/
+# Локальные настройки инструментов и рабочее состояние (не версионируется).
+.claude/settings.local.json
+.claude/launch.json
+.ailc/memory-bank/
+.ailc/baseline/
+.ailc/verify-memory/

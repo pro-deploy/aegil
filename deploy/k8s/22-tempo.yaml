@@ -1,6 +1,6 @@
-# Хранилище трасс Grafana Tempo (ADR-0032, A.7 второй слой). Монолитный режим,
-# локальное файловое хранилище, ретенция трасс 72 часа, приёмник OTLP (gRPC 4317
-# и HTTP 4318). Живёт на управляющем узле. Скромные лимиты под малый объём.
+# Хранилище трасс Grafana Tempo. Монолитный режим, локальное файловое хранилище,
+# ретенция трасс 72 часа, приёмник OTLP (gRPC 4317 и HTTP 4318). Скромные лимиты под
+# малый объём.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -69,7 +69,7 @@ spec:
     metadata:
       labels: {app: tempo}
     spec:
-      nodeSelector: {node-role.kubernetes.io/role: control}
+      automountServiceAccountToken: false
       securityContext: {fsGroup: 10001}
       containers:
         - name: tempo
@@ -83,6 +83,10 @@ spec:
             httpGet: {path: /ready, port: 3200}
             initialDelaySeconds: 15
             periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /ready, port: 3200}
+            initialDelaySeconds: 60
+            periodSeconds: 30
           volumeMounts:
             - {name: config, mountPath: /etc/tempo}
             - {name: data, mountPath: /var/tempo}

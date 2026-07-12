@@ -1,0 +1,25 @@
+apiVersion: v2
+name: kube-sentinel
+description: >-
+  Автономный SRE-агент для произвольного кластера Kubernetes. Панель агента с настраиваемым
+  уровнем автономии, детерминированный разбор первопричин (RCA) с активным обучением,
+  привилегированный узловой агент и опциональный стек наблюдаемости (Loki, Tempo, Alloy,
+  OpenTelemetry Collector, Grafana). Ставится в чужой кластер одной командой.
+type: application
+# Единая семантическая версия продукта. version это версия чарта, appVersion это версия образов
+# по умолчанию (используется как тег, если images.tag не задан явно). Держатся в согласии между
+# собой, с манифестами и с реестром (docs/CONVENTIONS.md). На каждый выпуск обе увеличиваются.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - sre
+  - kubernetes
+  - observability
+  - incident-response
+  - autonomous-agent
+home: https://example.com/kube-sentinel
+sources:
+  - https://example.com/kube-sentinel
+maintainers:
+  - name: kube-sentinel

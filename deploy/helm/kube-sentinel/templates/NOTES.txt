@@ -1,0 +1,22 @@
+kube-sentinel {{ .Chart.AppVersion }} установлен в пространство {{ include "kube-sentinel.namespace" . }}.
+
+Наблюдаемое пространство имён: {{ include "kube-sentinel.targetNamespace" . }}.
+Уровень автономии: {{ .Values.autonomy }} (observe означает сухой прогон без автономных действий).
+
+Перед использованием убедитесь, что созданы секреты (чарт их НЕ создаёт):
+  - {{ .Values.secrets.main.name }} с ключами {{ .Values.secrets.main.keys.operators }},
+    {{ .Values.secrets.main.keys.nodeagentToken }}, {{ .Values.secrets.main.keys.llmApiKey }},
+    {{ .Values.secrets.main.keys.postgresDsn }} и блоком S3;
+{{- if .Values.observability.grafana.enabled }}
+  - {{ .Values.secrets.grafana.name }} с ключами {{ .Values.secrets.grafana.userKey }} и {{ .Values.secrets.grafana.passwordKey }}.
+{{- end }}
+
+Доступ к панели агента (наружу не публикуется, только через туннель):
+  kubectl -n {{ include "kube-sentinel.namespace" . }} port-forward svc/agent-panel 9109:9109
+  затем http://127.0.0.1:9109
+
+{{- if not .Values.nodeAgent.enabled }}
+
+Узловой агент выключен (nodeAgent.enabled=false): его финальный манифест готовит отдельный агент.
+Без него автономные действия на узлах (чистка диска, prune и прочее) недоступны.
+{{- end }}

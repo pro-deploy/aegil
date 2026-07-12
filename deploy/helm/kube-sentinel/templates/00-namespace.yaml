@@ -1,0 +1,10 @@
+{{- if .Values.namespace.create }}
+# Пространство установки продукта. Создаётся только если namespace.create=true; обычно namespace
+# создаёт helm --create-namespace, тогда этот ресурс выключен, чтобы не было двойного владения.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "kube-sentinel.namespace" . }}
+  labels:
+{{ include "kube-sentinel.labels" . | indent 4 }}
+{{- end }}

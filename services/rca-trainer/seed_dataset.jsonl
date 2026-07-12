@@ -1,267 +1,220 @@
-{"text": "на gpu-узле диск заполнен на 98 процентов, сервис перестал писать результаты", "labels": ["anomalies", "logs"]}
-{"text": "no space left on device в логах воркера транскрибации", "labels": ["logs"]}
-{"text": "свободное место на /var упало до нуля за последний час", "labels": ["anomalies"]}
-{"text": "disk usage spiked to 100% on the control node", "labels": ["anomalies"]}
-{"text": "постгрес не может записать WAL, кончилось место на диске", "labels": ["logs", "dependencies"]}
+{"text": "no space left on device в логах пода приложения", "labels": ["logs"]}
+{"text": "ENOSPC при записи временного файла внутри контейнера", "labels": ["logs"]}
+{"text": "в логах пода посыпались NullPointerException после рестарта", "labels": ["logs"]}
+{"text": "stack trace с panic в стандартном выводе контейнера", "labels": ["logs"]}
+{"text": "контейнер пишет segmentation fault и падает", "labels": ["logs"]}
+{"text": "в логах деплоймента куча ERROR failed to connect", "labels": ["logs"]}
+{"text": "традиционный стектрейс питона в логах воркера очереди", "labels": ["logs"]}
+{"text": "goroutine stack dump в логах, похоже на deadlock", "labels": ["logs"]}
+{"text": "в stdout пода повторяется fatal error: runtime", "labels": ["logs"]}
+{"text": "логи заполнены сообщениями context canceled", "labels": ["logs"]}
+{"text": "ошибка сериализации json в логах сервиса", "labels": ["logs"]}
+{"text": "в логах пода unhandled promise rejection", "labels": ["logs"]}
+{"text": "permission denied при открытии конфигурационного файла в логах", "labels": ["logs"]}
+{"text": "в логах ошибка чтения секрета из смонтированного тома", "labels": ["logs"]}
+{"text": "контейнер логирует could not open database file", "labels": ["logs"]}
+{"text": "assertion failed в логах фонового обработчика", "labels": ["logs"]}
+{"text": "логи показывают повторяющийся stack overflow в рекурсии", "labels": ["logs"]}
+{"text": "в логах пода сыпется error unmarshalling response body", "labels": ["logs"]}
+{"text": "OOMKilled в логах, память ушла в потолок перед падением", "labels": ["anomalies", "logs"]}
+{"text": "kernel oom killer прибил основной процесс контейнера", "labels": ["logs"]}
+{"text": "под убит по нехватке памяти на пиковой нагрузке", "labels": ["anomalies", "logs"]}
+{"text": "CrashLoopBackOff на деплойменте, в логах panic при старте", "labels": ["logs", "anomalies"]}
+{"text": "постоянный рестарт пода, каждый цикл фатальная ошибка в логах", "labels": ["logs", "anomalies"]}
 {"text": "резкий рост занятого места, за сутки съело 40 гигабайт логами", "labels": ["anomalies", "logs"]}
-{"text": "filesystem full, cannot allocate, uploads failing", "labels": ["logs", "anomalies"]}
-{"text": "диск под S3-кэшем забит, чистка временных файлов не отработала", "labels": ["anomalies", "logs"]}
-{"text": "ENOSPC при сохранении модели тренером setfit", "labels": ["logs"]}
-{"text": "место на loki-хранилище на исходе, ретеншен не поспевает", "labels": ["anomalies"]}
-{"text": "df показывает 99% на разделе данных, алерт по свободному месту", "labels": ["alerts", "anomalies"]}
-{"text": "out of disk space, pod evicted по ephemeral-storage", "labels": ["anomalies", "logs"]}
-{"text": "под vllm убит OOMKilled, память ушла в потолок перед падением", "labels": ["anomalies", "logs"]}
-{"text": "container killed due to memory limit, OOM", "labels": ["logs", "anomalies"]}
-{"text": "резкий скачок потребления памяти, затем перезапуск воркера", "labels": ["anomalies"]}
-{"text": "kernel oom killer прибил процесс транскрибации", "labels": ["logs"]}
-{"text": "memory usage растёт линейно, похоже на утечку, дошло до лимита", "labels": ["anomalies"]}
-{"text": "сервис asr вылетел по нехватке памяти на пиковой нагрузке", "labels": ["anomalies", "logs"]}
-{"text": "OOMKilled в третий раз за час на узле gpu", "labels": ["anomalies", "logs"]}
-{"text": "потребление RSS превысило requests, cgroup убил контейнер", "labels": ["anomalies", "logs"]}
-{"text": "out of memory при загрузке крупной модели в vram", "labels": ["logs"]}
-{"text": "память в полке 100%, свопа нет, процесс убит", "labels": ["anomalies", "logs"]}
-{"text": "рост heap до предела и падение, дамп в логах", "labels": ["anomalies", "logs"]}
-{"text": "memory spike then crash, exit code 137", "labels": ["anomalies", "logs"]}
-{"text": "под postgres в CrashLoopBackOff, рестартует каждые десять секунд", "labels": ["logs", "anomalies", "dependencies"]}
-{"text": "CrashLoopBackOff на сервисе биллинга после старта", "labels": ["logs", "anomalies"]}
-{"text": "контейнер падает на инициализации и рестартует по кругу", "labels": ["logs"]}
-{"text": "под не поднимается, back-off restarting failed container", "labels": ["logs", "anomalies"]}
-{"text": "сервис уведомлений в цикле перезапуска, readiness не проходит", "labels": ["logs", "anomalies"]}
-{"text": "рестарт-луп: exit 1, снова старт, снова exit 1", "labels": ["logs"]}
-{"text": "crashloop у rca после деплоя новой версии", "labels": ["logs", "anomalies", "releases"]}
-{"text": "под перезапускается бесконечно, счётчик рестартов растёт", "labels": ["anomalies", "logs"]}
-{"text": "liveness probe валит контейнер, он уходит в crashloopbackoff", "labels": ["logs", "anomalies"]}
-{"text": "stalwart в crashloop, не может открыть порт, падает", "labels": ["logs", "anomalies", "network"]}
-{"text": "непрерывные рестарты воркера очереди, ничего не обрабатывает", "labels": ["anomalies", "logs"]}
-{"text": "pod keeps crashing on boot, config parse error", "labels": ["logs"]}
-{"text": "одно ядро процессора залипло на 100 процентов, остальные простаивают", "labels": ["anomalies"]}
-{"text": "cpu core stuck at 100%, single-thread busy loop", "labels": ["anomalies"]}
-{"text": "подозрение на busy loop, одно ядро в полке уже полчаса", "labels": ["anomalies", "logs"]}
-{"text": "нагрузка на процессор неравномерная, ядро 3 постоянно занято", "labels": ["anomalies"]}
-{"text": "залипшая горутина крутит ядро вхолостую", "labels": ["anomalies", "logs"]}
-{"text": "high cpu on one core while others idle, possible spinlock", "labels": ["anomalies"]}
-{"text": "процессорное ядро упёрлось в потолок, throughput встал", "labels": ["anomalies"]}
-{"text": "аномальная утилизация одного ядра, профиль показывает горячий цикл", "labels": ["anomalies"]}
-{"text": "cpu saturation на одном воркере, латентность поехала", "labels": ["anomalies"]}
-{"text": "одно ядро зажато на сто процентов, вентилятор на максимуме", "labels": ["anomalies"]}
-{"text": "бесконечный цикл в парсере держит ядро занятым", "labels": ["anomalies", "logs"]}
-{"text": "single core pinned, task not yielding", "labels": ["anomalies"]}
-{"text": "очередь заданий транскрибации растёт и не разгребается", "labels": ["anomalies", "dependencies"]}
-{"text": "job queue stuck, backlog keeps growing", "labels": ["anomalies"]}
-{"text": "воркеры не забирают задачи, очередь встала на месте", "labels": ["anomalies", "dependencies"]}
-{"text": "глубина очереди перевалила за тысячу и продолжает расти", "labels": ["anomalies"]}
-{"text": "задания копятся, ни одно не завершается уже двадцать минут", "labels": ["anomalies", "dependencies"]}
-{"text": "queue backlog explosion, consumers idle", "labels": ["anomalies", "dependencies"]}
-{"text": "рост необработанных заданий, лаг потребителя увеличивается", "labels": ["anomalies"]}
-{"text": "очередь редиса пухнет, обработчик молчит", "labels": ["anomalies", "dependencies", "network"]}
-{"text": "pending jobs растут по экспоненте, пропускная способность упала", "labels": ["anomalies"]}
-{"text": "застряла обработка, задачи висят в статусе running бесконечно", "labels": ["anomalies", "logs"]}
-{"text": "consumer lag high, очередь не сокращается", "labels": ["anomalies", "dependencies"]}
-{"text": "накопление задач в брокере, throughput почти ноль", "labels": ["anomalies", "dependencies"]}
-{"text": "резкий всплеск 5xx на api, доля ошибок скакнула до 30 процентов", "labels": ["dependencies", "anomalies"]}
-{"text": "spike of 500 errors on the api gateway", "labels": ["dependencies", "anomalies"]}
-{"text": "api отдаёт 502 bad gateway, upstream недоступен", "labels": ["dependencies", "network"]}
-{"text": "рост 503 service unavailable на бэкенде", "labels": ["dependencies", "anomalies"]}
-{"text": "всплеск ошибок 5xx совпал с выкатом новой версии api", "labels": ["dependencies", "anomalies", "releases"]}
-{"text": "http 500 массово на эндпоинте загрузки", "labels": ["dependencies", "logs"]}
-{"text": "error rate на api подскочил, пользователи получают 500", "labels": ["anomalies", "dependencies"]}
-{"text": "gateway 504 gateway timeout от вышестоящего сервиса", "labels": ["dependencies", "network"]}
-{"text": "пятисотки полезли после релиза, откатываем", "labels": ["releases", "dependencies"]}
-{"text": "burst of internal server errors, upstream saturated", "labels": ["dependencies", "anomalies"]}
-{"text": "api пятисотит на каждом втором запросе", "labels": ["dependencies", "logs"]}
-{"text": "резкий рост доли ошибочных ответов сервиса", "labels": ["anomalies", "dependencies"]}
-{"text": "connection refused при подключении к postgres", "labels": ["network", "dependencies"]}
-{"text": "dns resolution failed for redis host", "labels": ["network", "dependencies"]}
-{"text": "не резолвится имя postgres внутри кластера", "labels": ["network", "dependencies"]}
-{"text": "redis connection refused, приложение не может взять соединение", "labels": ["network", "dependencies"]}
-{"text": "could not translate host name to address, postgres unreachable", "labels": ["network", "dependencies"]}
-{"text": "отказ в соединении с базой, порт 5432 не отвечает", "labels": ["network", "dependencies"]}
-{"text": "dial tcp connection refused на редис 6379", "labels": ["network", "dependencies"]}
-{"text": "postgres недоступен, connection refused по всему кластеру", "labels": ["network", "dependencies"]}
-{"text": "no route to host до реплики postgres", "labels": ["network", "dependencies"]}
-{"text": "name resolution error, служба редиса не найдена в dns", "labels": ["network", "dependencies"]}
-{"text": "соединение с redis сбрасывается, connection reset by peer", "labels": ["network", "dependencies"]}
-{"text": "postgres refused connection, слишком много клиентов или он лежит", "labels": ["network", "dependencies"]}
-{"text": "таймаут вызова ml-сервиса транскрибации, deadline exceeded", "labels": ["dependencies", "network"]}
-{"text": "timeout calling the asr inference endpoint", "labels": ["dependencies", "network"]}
-{"text": "вызов модели не укладывается в таймаут, запрос отваливается", "labels": ["dependencies", "network"]}
-{"text": "ml inference timed out, context deadline exceeded", "labels": ["dependencies", "network"]}
-{"text": "долгий ответ vllm, клиент рвёт по таймауту", "labels": ["dependencies", "network", "anomalies"]}
-{"text": "запросы к llm-сервису висят и падают по deadline", "labels": ["dependencies", "network"]}
-{"text": "таймауты на перевод nllb, очередь на инференс переполнена", "labels": ["dependencies", "anomalies"]}
-{"text": "gateway timeout от модели, ответ не пришёл за 120 секунд", "labels": ["dependencies", "network"]}
-{"text": "inference request timeout под нагрузкой", "labels": ["dependencies", "network"]}
-{"text": "модель отвечает медленно, таймауты растут", "labels": ["dependencies", "anomalies"]}
-{"text": "дубляж piper вызывает таймаут, сервис не успевает", "labels": ["dependencies", "network"]}
-{"text": "таймаут grpc до движка распознавания", "labels": ["dependencies", "network"]}
-{"text": "латентность распознавания выросла втрое против baseline", "labels": ["anomalies", "dependencies"]}
-{"text": "asr latency degradation, p99 skyrocketed", "labels": ["anomalies"]}
-{"text": "время ответа транскрибации поехало вверх, деградация", "labels": ["anomalies", "dependencies"]}
-{"text": "медленная обработка аудио, задержки на движке asr", "labels": ["anomalies", "dependencies"]}
-{"text": "p95 распознавания вырос с секунды до пяти", "labels": ["anomalies"]}
-{"text": "деградация латентности asr после наплыва запросов", "labels": ["anomalies", "dependencies"]}
-{"text": "throughput движка распознавания просел, задержки накапливаются", "labels": ["anomalies", "dependencies"]}
-{"text": "latency of transcription pipeline degraded sharply", "labels": ["anomalies"]}
-{"text": "аудио обрабатывается вдвое дольше обычного", "labels": ["anomalies"]}
-{"text": "рост времени инференса parakeet, деградация качества сервиса", "labels": ["anomalies", "dependencies"]}
-{"text": "задержки распознавания превысили порог алерта", "labels": ["anomalies", "alerts"]}
-{"text": "asr отвечает с большой задержкой, пользователи ждут", "labels": ["anomalies", "dependencies"]}
-{"text": "сервис молчит, за пятнадцать минут ни одной строки в логах", "labels": ["anomalies"]}
-{"text": "no logs from the billing service, полная тишина", "labels": ["anomalies", "logs"]}
-{"text": "поток логов оборвался, сервис как будто завис", "labels": ["anomalies", "logs"]}
-{"text": "тишина в логах воркера, обычно писал каждую секунду", "labels": ["anomalies"]}
-{"text": "service went silent, no output at all", "labels": ["anomalies"]}
-{"text": "логи перестали поступать от узла gpu", "labels": ["anomalies", "logs"]}
-{"text": "подозрительное молчание сервиса уведомлений", "labels": ["anomalies"]}
-{"text": "пропали heartbeat-сообщения, сервис не подаёт признаков жизни", "labels": ["anomalies"]}
-{"text": "нет ни одной записи в loki за последние десять минут", "labels": ["anomalies", "logs"]}
-{"text": "сервис завис без ошибок, просто перестал что-либо логировать", "labels": ["anomalies"]}
-{"text": "logging stopped abruptly, process seems hung", "labels": ["anomalies", "logs"]}
-{"text": "тишина по всем каналам от адреса rca, health не отвечает", "labels": ["anomalies", "network"]}
-{"text": "истёк tls-сертификат на krokki.ru, браузер ругается", "labels": ["network", "alerts"]}
-{"text": "certificate expired, handshake failed", "labels": ["network", "logs"]}
-{"text": "сертификат домена протух, https не открывается", "labels": ["network", "alerts"]}
-{"text": "x509 certificate has expired or is not yet valid", "labels": ["network", "logs"]}
-{"text": "tls handshake error, expired certificate", "labels": ["network", "logs"]}
-{"text": "алерт: до истечения сертификата остался день", "labels": ["alerts"]}
-{"text": "клиенты получают ошибку сертификата при подключении", "labels": ["network"]}
-{"text": "cert-manager не продлил сертификат, срок вышел", "labels": ["network", "releases"]}
-{"text": "протух корневой сертификат внутренней mtls-связи", "labels": ["network", "dependencies"]}
-{"text": "expired TLS cert breaks the api over https", "labels": ["network", "dependencies"]}
-{"text": "сертификат почтового сервера просрочен, tls не встаёт", "labels": ["network", "dependencies"]}
-{"text": "ssl certificate verify failed, expired", "labels": ["network", "logs"]}
-{"text": "stalwart не отправляет письма, уведомления не доходят", "labels": ["dependencies", "logs"]}
-{"text": "smtp submission failed, mail queue stuck in stalwart", "labels": ["dependencies", "anomalies"]}
-{"text": "почтовый сервер отбивает отправку, ошибка релея", "labels": ["dependencies", "logs"]}
-{"text": "stalwart mail delivery failing, письма копятся", "labels": ["dependencies", "anomalies"]}
-{"text": "не уходят письма верификации, ошибка smtp 550", "labels": ["dependencies", "logs"]}
-{"text": "сбой доставки почты, dkim подпись не проходит", "labels": ["dependencies", "logs"]}
-{"text": "mail server refuses connection на 25 порту", "labels": ["network", "dependencies"]}
-{"text": "очередь исходящей почты растёт, stalwart не отдаёт наружу", "labels": ["dependencies", "anomalies"]}
-{"text": "отправка уведомлений упала, релей вернул временную ошибку", "labels": ["dependencies", "logs"]}
-{"text": "stalwart smtp timeout при попытке доставки", "labels": ["dependencies", "network"]}
-{"text": "письма застряли, postmaster сообщает о недоставке", "labels": ["dependencies", "anomalies"]}
-{"text": "mail sending broken after stalwart restart", "labels": ["dependencies", "logs"]}
-{"text": "ошибка списания в биллинге, транзакция откатилась", "labels": ["logs", "dependencies"]}
-{"text": "quota exceeded, пользователю отказано в загрузке", "labels": ["logs", "dependencies"]}
-{"text": "биллинг отдаёт ошибку при проверке квоты", "labels": ["logs", "dependencies"]}
-{"text": "превышен лимит минут транскрибации, квота исчерпана", "labels": ["logs", "dependencies"]}
-{"text": "billing service error, payment declined", "labels": ["logs", "dependencies"]}
-{"text": "не удаётся списать средства, ошибка платёжного шлюза", "labels": ["dependencies", "logs"]}
-{"text": "исключение в модуле квот, счётчик ушёл в минус", "labels": ["logs"]}
-{"text": "отказ биллинга: quota check failed для тарифа", "labels": ["logs", "dependencies"]}
-{"text": "ошибки биллинга посыпались после смены тарифной логики", "labels": ["logs", "dependencies", "releases"]}
-{"text": "payment provider returned error, billing stuck", "labels": ["dependencies", "logs"]}
-{"text": "лимит запросов превышен, пользователь упёрся в квоту", "labels": ["logs", "dependencies"]}
-{"text": "сбой сверки баланса, биллинг кидает исключение", "labels": ["logs", "dependencies"]}
-{"text": "после деплоя новой версии посыпались ошибки, явная регрессия", "labels": ["releases", "logs"]}
-{"text": "regression after the latest release, откатываемся", "labels": ["releases", "anomalies"]}
-{"text": "выкатили версию 0.12.0 и сервис сломался", "labels": ["releases", "logs"]}
-{"text": "новый релиз ломает обработку, до него всё работало", "labels": ["releases", "anomalies"]}
-{"text": "merge внёс регрессию, тесты на проде красные", "labels": ["releases", "logs"]}
-{"text": "после коммита в main api начал падать", "labels": ["releases", "logs"]}
-{"text": "deploy triggered a spike in errors, likely a bad release", "labels": ["releases", "anomalies", "logs"]}
-{"text": "изменение конфигурации в последнем выкате всё поломало", "labels": ["releases", "logs"]}
-{"text": "откат релиза помог, значит причина в изменении", "labels": ["releases"]}
-{"text": "новая версия воркера регрессит на длинных файлах", "labels": ["releases", "anomalies"]}
-{"text": "bad deploy, rollback in progress", "labels": ["releases"]}
-{"text": "релиз добавил баг, сервис деградировал сразу после выката", "labels": ["releases", "anomalies"]}
-{"text": "сменили образ, и пошли падения, похоже на регрессию релиза", "labels": ["releases", "logs"]}
-{"text": "hotfix выкатили, но стало хуже, откат", "labels": ["releases", "anomalies"]}
-{"text": "сетевой сбой узла gpu, пропала связь по туннелю wireguard", "labels": ["network"]}
-{"text": "wireguard tunnel down, узлы не видят друг друга", "labels": ["network"]}
-{"text": "потеряна связность между control и gpu узлами", "labels": ["network"]}
-{"text": "wg-туннель отвалился, межузловой трафик не идёт", "labels": ["network"]}
-{"text": "network partition, узел выпал из кластера", "labels": ["network", "anomalies"]}
-{"text": "пакеты теряются на туннеле, высокий packet loss", "labels": ["network", "anomalies"]}
-{"text": "no connectivity over wireguard, handshake не проходит", "labels": ["network"]}
-{"text": "сеть узла легла, ping до соседа не проходит", "labels": ["network"]}
-{"text": "туннель wireguard нестабилен, соединение рвётся", "labels": ["network", "anomalies"]}
-{"text": "маршрут через wg пропал, сервисы за туннелем недоступны", "labels": ["network", "dependencies"]}
-{"text": "node network failure, интерфейс упал", "labels": ["network", "logs"]}
-{"text": "wireguard peer unreachable, keepalive молчит", "labels": ["network"]}
-{"text": "сетевая деградация между узлами, растёт rtt", "labels": ["network", "anomalies"]}
-{"text": "сработал алерт prometheus по высокой нагрузке cpu", "labels": ["alerts", "anomalies"]}
-{"text": "zabbix прислал триггер по недоступности хоста", "labels": ["alerts", "network"]}
-{"text": "grafana alert fired: error rate above threshold", "labels": ["alerts", "anomalies"]}
-{"text": "пришёл алерт по заполнению диска", "labels": ["alerts", "anomalies"]}
-{"text": "triggered alert: pod restarts too frequent", "labels": ["alerts", "anomalies"]}
-{"text": "мониторинг зафиксировал превышение порога латентности", "labels": ["alerts", "anomalies"]}
-{"text": "алерт по памяти: rss близок к лимиту пода", "labels": ["alerts", "anomalies"]}
-{"text": "prometheus alert: target down", "labels": ["alerts", "network"]}
-{"text": "сработала тревога по росту очереди заданий", "labels": ["alerts", "anomalies"]}
-{"text": "alert firing уже десять минут, никто не разобрал", "labels": ["alerts"]}
-{"text": "несколько алертов подряд по разным сервисам", "labels": ["alerts", "anomalies"]}
-{"text": "тревога мониторинга: сертификат скоро истечёт", "labels": ["alerts", "network"]}
-{"text": "в логах traceback с null pointer, разбери причину", "labels": ["logs"]}
-{"text": "посыпались исключения в обработчике загрузки", "labels": ["logs"]}
-{"text": "stacktrace в логах воркера, unhandled exception", "labels": ["logs"]}
-{"text": "ошибка парсинга json в логах api", "labels": ["logs"]}
-{"text": "error: invalid argument в потоке распознавания", "labels": ["logs"]}
-{"text": "логи полны предупреждений о ретраях", "labels": ["logs"]}
-{"text": "необработанное исключение уронило обработчик очереди", "labels": ["logs", "anomalies"]}
-{"text": "panic в go-сервисе, стек в логах", "labels": ["logs"]}
-{"text": "что говорят логи по сбою экспорта в pptx", "labels": ["logs"]}
-{"text": "exception при инициализации клиента s3", "labels": ["logs", "dependencies"]}
-{"text": "ошибка сериализации в логах биллинга", "labels": ["logs"]}
-{"text": "разбери логи за последний час, там ошибки на загрузке", "labels": ["logs"]}
-{"text": "покажи каскад зависимостей по сбою сервиса транскрибации", "labels": ["dependencies"]}
-{"text": "upstream сервис недоступен, вся цепочка встала", "labels": ["dependencies", "network"]}
-{"text": "зависимость от llm-сервиса тянет за собой отказ api", "labels": ["dependencies"]}
-{"text": "downstream не отвечает, сервис деградирует по цепочке", "labels": ["dependencies", "anomalies"]}
-{"text": "построй граф зависимостей вокруг постгреса", "labels": ["dependencies"]}
-{"text": "отказ одной зависимости каскадом уронил три сервиса", "labels": ["dependencies", "anomalies"]}
-{"text": "вышестоящий сервис вызывает наш и падает по таймауту", "labels": ["dependencies", "network"]}
-{"text": "топология: кто зависит от редиса и как распространяется сбой", "labels": ["dependencies"]}
-{"text": "cascade failure from the storage dependency", "labels": ["dependencies", "anomalies"]}
-{"text": "сервис завязан на s3, при его недоступности всё встаёт", "labels": ["dependencies", "network"]}
-{"text": "проверь восходящие и нисходящие зависимости rca", "labels": ["dependencies"]}
-{"text": "нарушена цепочка вызовов между сервисами, где корень", "labels": ["dependencies"]}
-{"text": "firing alert по недоступности эндпоинта health", "labels": ["alerts"]}
-{"text": "тревога: rps упал ниже минимума, возможно сервис лёг", "labels": ["alerts", "anomalies"]}
-{"text": "alertmanager сгруппировал десяток алертов по одному узлу", "labels": ["alerts"]}
-{"text": "сработало правило по росту 5xx выше пяти процентов", "labels": ["alerts", "anomalies", "dependencies"]}
-{"text": "critical alert: disk will fill in two hours", "labels": ["alerts", "anomalies"]}
-{"text": "оповещение по деградации латентности пришло в дежурный чат", "labels": ["alerts", "anomalies"]}
-{"text": "warning alert по числу перезапусков пода", "labels": ["alerts", "anomalies"]}
-{"text": "prometheus поднял тревогу: up == 0 для таргета rca", "labels": ["alerts", "network"]}
-{"text": "алерт по превышению квоты памяти узлом", "labels": ["alerts", "anomalies"]}
-{"text": "triggered: SSL certificate expiry warning", "labels": ["alerts", "network"]}
-{"text": "пришла тревога по остановке очереди, ничего не обрабатывается", "labels": ["alerts", "anomalies"]}
-{"text": "severity page: сервис биллинга недоступен", "labels": ["alerts", "dependencies"]}
-{"text": "сработал алерт по packet loss на туннеле", "labels": ["alerts", "network"]}
-{"text": "оповещение о молчании сервиса, нет метрик десять минут", "labels": ["alerts", "anomalies"]}
-{"text": "несколько critical подряд, разбери первопричину по тревогам", "labels": ["alerts", "anomalies"]}
-{"text": "зафиксирован триггер по аномальному потреблению cpu", "labels": ["alerts", "anomalies"]}
-{"text": "alert: replica lag на постгресе выше порога", "labels": ["alerts", "dependencies"]}
-{"text": "тревога по недоставке почты от почтового сервера", "labels": ["alerts", "dependencies"]}
-{"text": "watchdog alert: воркер не шлёт heartbeat", "labels": ["alerts", "anomalies"]}
-{"text": "оповещение по резкому падению пропускной способности", "labels": ["alerts", "anomalies"]}
-{"text": "prometheus fired: node not ready", "labels": ["alerts", "network"]}
-{"text": "алерт по истечению tls, сутки до просрочки", "labels": ["alerts", "network"]}
-{"text": "тревога: слишком много таймаутов к ml-сервису", "labels": ["alerts", "dependencies", "network"]}
-{"text": "critical: postgres connections at limit", "labels": ["alerts", "dependencies"]}
-{"text": "совпало по времени с выкатом, подозреваю изменение", "labels": ["releases"]}
-{"text": "что менялось в последнем деплое перед сбоем", "labels": ["releases"]}
-{"text": "recent deploy correlates with the incident window", "labels": ["releases", "anomalies"]}
-{"text": "проверь последние коммиты в main, не они ли причина", "labels": ["releases"]}
-{"text": "выкат конфигурации совпал с началом ошибок", "labels": ["releases", "anomalies"]}
-{"text": "после мерджа ветки фичи всё поехало", "labels": ["releases", "logs"]}
-{"text": "свежий релиз образа rca, сразу пошли рестарты", "labels": ["releases", "anomalies", "logs"]}
-{"text": "изменение переменных окружения в выкате сломало запуск", "labels": ["releases", "logs"]}
-{"text": "канареечный релиз показал регресс, катим назад", "labels": ["releases", "anomalies"]}
-{"text": "bump версии зависимости внёс несовместимость", "labels": ["releases", "dependencies"]}
-{"text": "was there a release right before latency spiked", "labels": ["releases", "anomalies"]}
-{"text": "деплой прошёл, но health не поднялся, откатываем выкат", "labels": ["releases", "anomalies"]}
-{"text": "новая миграция в релизе заблокировала таблицу", "labels": ["releases", "dependencies"]}
-{"text": "изменение в helm-чарте выкатило битую конфигурацию", "labels": ["releases", "logs"]}
-{"text": "релиз 0.12.0 регрессит на экспорте, до него было ок", "labels": ["releases", "anomalies"]}
-{"text": "откат на предыдущий тег вернул работоспособность", "labels": ["releases"]}
-{"text": "changelog последнего выката, что могло сломаться", "labels": ["releases"]}
-{"text": "свежий commit убрал нужный флаг, сервис падает", "labels": ["releases", "logs"]}
-{"text": "выкатили изменение схемы, посыпались ошибки записи", "labels": ["releases", "logs", "dependencies"]}
-{"text": "bad rollout, new pods unhealthy, rolling back", "labels": ["releases", "anomalies"]}
-{"text": "релиз поменял таймауты, пошли обрывы к зависимостям", "labels": ["releases", "dependencies", "network"]}
-{"text": "после апгрейда версии базы приложение не стартует", "labels": ["releases", "dependencies", "logs"]}
-{"text": "что было задеплоено за последний час на узле control", "labels": ["releases"]}
-{"text": "регрессия качества после смены модели в релизе", "labels": ["releases", "anomalies"]}
+{"text": "filesystem full в логах, cannot allocate, запись падает", "labels": ["logs", "anomalies"]}
+{"text": "на узле диск заполнен на 98 процентов, под перестал писать данные", "labels": ["anomalies", "logs"]}
+{"text": "постгрес в кластере не может записать WAL, кончилось место на диске", "labels": ["logs", "dependencies"]}
+{"text": "контейнер логирует too many open files, дескрипторы кончились", "labels": ["logs", "anomalies"]}
+{"text": "в логах взрыв исключений после последнего деплоя", "labels": ["logs", "releases"]}
+{"text": "после выката новой версии пошли ошибки десериализации в логах", "labels": ["logs", "releases"]}
+{"text": "свежий релиз залил логи ошибками валидации запросов", "labels": ["logs", "releases"]}
+{"text": "новая версия пода стартует и сразу падает с ошибкой конфигурации", "labels": ["logs", "releases", "anomalies"]}
+{"text": "логи стали втрое многословнее после обновления образа", "labels": ["anomalies", "logs"]}
+{"text": "в логах пода connection refused к соседнему сервису", "labels": ["logs", "network"]}
+{"text": "контейнер логирует dial tcp i/o timeout к бэкенду", "labels": ["logs", "network"]}
+{"text": "в логах ошибки чтения из очереди сообщений", "labels": ["logs", "dependencies"]}
+{"text": "под логирует failed to acquire lock, зависимость недоступна", "labels": ["logs", "dependencies"]}
+{"text": "ошибки миграции схемы в логах после релиза", "labels": ["logs", "dependencies", "releases"]}
+{"text": "свободное место на корневом разделе узла упало до нуля за час", "labels": ["anomalies"]}
+{"text": "disk usage подскочил до 100 процентов на управляющем узле", "labels": ["anomalies"]}
+{"text": "резкий скачок использования памяти подом без явной причины", "labels": ["anomalies"]}
+{"text": "необычный всплеск загрузки процессора на узле кластера", "labels": ["anomalies"]}
+{"text": "аномальный рост числа рестартов пода за последние десять минут", "labels": ["anomalies"]}
+{"text": "выброс задержки ответа сервиса, p99 улетел вверх", "labels": ["anomalies"]}
+{"text": "резкое отклонение потребления памяти от суточного профиля", "labels": ["anomalies"]}
+{"text": "количество активных подов внезапно удвоилось", "labels": ["anomalies"]}
+{"text": "подозрительный всплеск сетевого трафика с одного пода", "labels": ["anomalies"]}
+{"text": "необычно высокая нагрузка на диск, iops зашкаливает", "labels": ["anomalies"]}
+{"text": "аномалия в метрике задержки, график резко пошёл вверх", "labels": ["anomalies"]}
+{"text": "внезапный рост числа открытых соединений на узле", "labels": ["anomalies"]}
+{"text": "throughput сервиса упал вдвое без изменения нагрузки", "labels": ["anomalies"]}
+{"text": "необычное падение количества обработанных запросов в минуту", "labels": ["anomalies"]}
+{"text": "резкий рост латентности после наплыва запросов", "labels": ["anomalies", "dependencies"]}
+{"text": "время ответа сервиса поехало вверх, деградация под нагрузкой", "labels": ["anomalies", "dependencies"]}
+{"text": "медленная обработка запросов, задержки на зависимом сервисе", "labels": ["anomalies", "dependencies"]}
+{"text": "деградация латентности после всплеска входящего трафика", "labels": ["anomalies", "dependencies"]}
+{"text": "очередь заданий растёт и не разгребается", "labels": ["anomalies", "dependencies"]}
+{"text": "бэклог сообщений в брокере растёт лавинообразно", "labels": ["anomalies", "dependencies"]}
+{"text": "запросы обрабатываются вдвое дольше обычного", "labels": ["anomalies"]}
+{"text": "сервис отвечает с большой задержкой, пользователи ждут", "labels": ["anomalies", "dependencies"]}
+{"text": "память контейнера линейно течёт, похоже на утечку", "labels": ["anomalies"]}
+{"text": "нагрузка на узел скачет пилой, автоскейлер не поспевает", "labels": ["anomalies"]}
+{"text": "резкий рост потребления памяти сразу после нового релиза", "labels": ["anomalies", "releases"]}
+{"text": "скачок ошибок совпал по времени с выкатом версии", "labels": ["anomalies", "releases", "logs"]}
+{"text": "после деплоя латентность выросла на порядок", "labels": ["anomalies", "releases"]}
+{"text": "аномальный рост рестартов пода начался после обновления", "labels": ["anomalies", "releases"]}
+{"text": "метрика доступности просела сразу за релизом", "labels": ["anomalies", "releases", "alerts"]}
+{"text": "сработал алерт в Grafana по высокой загрузке памяти узла", "labels": ["alerts"]}
+{"text": "прилетел алерт из Alertmanager о недоступности пода", "labels": ["alerts"]}
+{"text": "severity page: узел кластера ушёл в NotReady", "labels": ["alerts"]}
+{"text": "алерт по превышению порога использования диска на узле", "labels": ["alerts", "anomalies"]}
+{"text": "триггер мониторинга по росту ошибок 5xx на ingress", "labels": ["alerts", "logs"]}
+{"text": "алерт о том, что деплоймент недоступен более пяти минут", "labels": ["alerts", "anomalies"]}
+{"text": "Grafana шлёт уведомление о всплеске латентности сервиса", "labels": ["alerts", "anomalies"]}
+{"text": "сработал алерт по количеству рестартов пода в CrashLoop", "labels": ["alerts", "anomalies"]}
+{"text": "оповещение о заполнении хранилища логов Loki", "labels": ["alerts"]}
+{"text": "алерт по высокой нагрузке процессора на воркер-узле", "labels": ["alerts", "anomalies"]}
+{"text": "пришёл алерт о просроченном tls-сертификате на ingress", "labels": ["alerts", "network"]}
+{"text": "алерт о таймаутах к зависимому сервису", "labels": ["alerts", "network"]}
+{"text": "алерт: под недоступен по healthcheck, соединение обрывается", "labels": ["alerts", "network"]}
+{"text": "сработала группа алертов по деградации доступности сервиса", "labels": ["alerts", "anomalies"]}
+{"text": "уведомление мониторинга о нехватке памяти на нескольких узлах", "labels": ["alerts", "anomalies"]}
+{"text": "алерт по росту очереди необработанных сообщений", "labels": ["alerts", "dependencies"]}
+{"text": "оповещение о недоступности базы данных из кластера", "labels": ["alerts", "dependencies"]}
+{"text": "алерт о падении зависимого upstream-сервиса", "labels": ["alerts", "dependencies"]}
+{"text": "прилетело уведомление о деградации после выката релиза", "labels": ["alerts", "releases"]}
+{"text": "алерт по всплеску ошибок сразу после деплоя новой версии", "labels": ["alerts", "anomalies"]}
+{"text": "сработал алерт о превышении лимита рестартов в неймспейсе", "labels": ["alerts"]}
+{"text": "Alertmanager группирует шквал алертов по одному узлу", "labels": ["alerts", "anomalies"]}
+{"text": "connection refused при обращении к сервису внутри кластера", "labels": ["network"]}
+{"text": "dns не резолвит имя сервиса из пода", "labels": ["network"]}
+{"text": "под не может достучаться до api-сервера, i/o timeout", "labels": ["network"]}
+{"text": "connection reset by peer при вызове соседнего пода", "labels": ["network"]}
+{"text": "сетевой таймаут между подами в разных неймспейсах", "labels": ["network"]}
+{"text": "порт сервиса не слушается, connection refused на подключении", "labels": ["network"]}
+{"text": "dns lookup failno such host для внутреннего сервиса", "labels": ["network"]}
+{"text": "tcp handshake не завершается, соединение висит", "labels": ["network"]}
+{"text": "таймаут вызова зависимого сервиса, deadline exceeded", "labels": ["dependencies", "network"]}
+{"text": "timeout calling the upstream inference endpoint", "labels": ["dependencies", "network"]}
+{"text": "долгий ответ бэкенда, клиент рвёт соединение по таймауту", "labels": ["dependencies", "network", "anomalies"]}
+{"text": "под не может подключиться к базе данных, connection refused", "labels": ["dependencies", "network"]}
+{"text": "обрыв соединения с брокером сообщений, реконнект не помогает", "labels": ["dependencies", "network"]}
+{"text": "сервис недоступен по сети, все запросы падают в timeout", "labels": ["dependencies", "network"]}
+{"text": "сетевая политика режет трафик между подами после изменения", "labels": ["network", "releases"]}
+{"text": "после выката ingress перестал маршрутизировать запросы", "labels": ["network", "releases"]}
+{"text": "медленные ответы зависимого сервиса, сеть под подозрением", "labels": ["dependencies", "network", "anomalies"]}
+{"text": "dns-резолвинг стал медленным, задержки на каждом запросе", "labels": ["network", "anomalies"]}
+{"text": "потеря пакетов между узлами кластера, retransmit растёт", "labels": ["network", "anomalies"]}
+{"text": "сервис-меш возвращает 503 upstream connect error", "labels": ["network", "dependencies"]}
+{"text": "под не стартует, ждёт готовности зависимого сервиса", "labels": ["dependencies"]}
+{"text": "покажи каскад зависимостей по сбою сервиса очередей", "labels": ["dependencies"]}
+{"text": "зависимый сервис отдаёт ошибку при проверке готовности", "labels": ["dependencies", "logs"]}
+{"text": "сервис кидает исключение при обращении к внешнему api", "labels": ["dependencies", "logs"]}
+{"text": "отказ зависимости: health check failed для базы данных", "labels": ["dependencies", "logs"]}
+{"text": "ошибки посыпались после смены контракта зависимого сервиса", "labels": ["dependencies", "logs", "releases"]}
+{"text": "сбой соседнего сервиса кидает исключения по всей цепочке", "labels": ["dependencies", "logs"]}
+{"text": "превышен лимит соединений к базе, пул исчерпан", "labels": ["dependencies", "logs"]}
+{"text": "топология сервисов: один upstream тянет за собой падение всех", "labels": ["dependencies"]}
+{"text": "граф зависимостей показывает каскадный отказ от одного пода", "labels": ["dependencies"]}
+{"text": "downstream-сервисы деградируют вслед за одним медленным звеном", "labels": ["dependencies", "anomalies"]}
+{"text": "зависимость по кэшу недоступна, всё идёт мимо, нагрузка растёт", "labels": ["dependencies", "anomalies"]}
+{"text": "после релиза сломалась совместимость с зависимым сервисом", "labels": ["dependencies", "releases"]}
+{"text": "новая версия ждёт миграцию, зависимость по схеме не готова", "labels": ["dependencies", "releases", "logs"]}
+{"text": "откат зависимого сервиса привёл к рассинхрону версий api", "labels": ["dependencies", "releases"]}
+{"text": "сервис не поднимается: зависимая конфигмапа не смонтирована", "labels": ["dependencies", "logs"]}
+{"text": "после последнего деплоя сервис стал нестабилен", "labels": ["releases"]}
+{"text": "выкат новой версии совпал с началом инцидента", "labels": ["releases"]}
+{"text": "нужно сопоставить инцидент с недавними изменениями релизов", "labels": ["releases"]}
+{"text": "покажи, какой коммит выкатили перед сбоем", "labels": ["releases"]}
+{"text": "подозрение на регрессию в свежем релизе деплоймента", "labels": ["releases"]}
+{"text": "откатили релиз, но проблема осталась", "labels": ["releases"]}
+{"text": "новый образ выкатили, поведение сервиса поменялось", "labels": ["releases"]}
+{"text": "мердж в основную ветку и деплой прошли час назад", "labels": ["releases"]}
+{"text": "после обновления версии выросло число ошибок в логах", "labels": ["releases", "logs"]}
+{"text": "релиз внёс регрессию, в логах новые исключения", "labels": ["releases", "logs"]}
+{"text": "свежий деплой уронил доступность, сработали алерты", "labels": ["releases", "alerts"]}
+{"text": "выкат конфигурации сломал сетевую связность подов", "labels": ["releases", "network"]}
+{"text": "новая версия тянет несовместимую зависимость", "labels": ["releases", "dependencies"]}
+{"text": "канареечный релиз показывает рост латентности", "labels": ["releases", "anomalies"]}
+{"text": "после деплоя пошёл шквал ошибок и всплеск латентности", "labels": ["releases", "logs", "anomalies"]}
+{"text": "новый релиз уронил зависимость, в логах ошибки подключения", "labels": ["releases", "dependencies", "logs"]}
+{"text": "выкат совпал с ростом рестартов и алертами по памяти", "labels": ["releases", "anomalies", "alerts"]}
+{"text": "сетевые таймауты к базе после обновления сетевой политики", "labels": ["network", "dependencies", "releases"]}
+{"text": "под падает по OOM, зависимость по кэшу перегружена", "labels": ["anomalies", "dependencies", "logs"]}
+{"text": "алерт по латентности, upstream-сервис отвечает медленно по сети", "labels": ["alerts", "dependencies", "network"]}
+{"text": "аномальный рост трафика вызвал таймауты к зависимому сервису", "labels": ["anomalies", "dependencies", "network"]}
+{"text": "после релиза алерт по ошибкам и деградация зависимостей", "labels": ["releases", "alerts", "dependencies"]}
+{"text": "резкий провал числа успешных запросов в графике", "labels": ["anomalies"]}
+{"text": "iowait на узле аномально высокий последние полчаса", "labels": ["anomalies"]}
+{"text": "число ошибок выросло скачком, база детекторов среагировала", "labels": ["anomalies", "logs"]}
+{"text": "память узла необъяснимо растёт, приближается к лимиту", "labels": ["anomalies"]}
+{"text": "нагрузка на диск скачет, latency записи выросла", "labels": ["anomalies"]}
+{"text": "keepalive соединения рвутся, постоянные реконнекты", "labels": ["network"]}
+{"text": "ingress отдаёт 502 bad gateway на часть запросов", "labels": ["network"]}
+{"text": "под изолирован сетевой политикой, трафик не проходит", "labels": ["network"]}
+{"text": "шквал алертов по неймспейсу после каскадного сбоя", "labels": ["alerts", "dependencies"]}
+{"text": "алерт о нехватке места на томе persistent volume", "labels": ["alerts"]}
+{"text": "пул соединений к очереди исчерпан, задания копятся", "labels": ["dependencies", "anomalies"]}
+{"text": "сервис висит в ожидании ответа зависимости", "labels": ["dependencies"]}
+{"text": "релиз выкатили частично, часть подов на старой версии", "labels": ["releases", "anomalies"]}
+{"text": "сравни поведение до и после последнего изменения конфигурации", "labels": ["releases"]}
+{"text": "в логах ошибка аутентификации к внутреннему хранилищу секретов", "labels": ["logs"]}
+{"text": "контейнер логирует read-only file system при записи", "labels": ["logs"]}
+{"text": "сработал алерт по высокой загрузке процессора на воркер-узле", "labels": ["alerts"]}
+{"text": "прилетел алерт о том, что реплик деплоймента меньше желаемого", "labels": ["alerts"]}
+{"text": "алерт по росту времени ответа ingress выше порога", "labels": ["alerts", "anomalies"]}
+{"text": "уведомление мониторинга о падении readiness пода", "labels": ["alerts"]}
+{"text": "алерт: количество ошибок 5xx превысило порог за минуту", "labels": ["alerts", "logs"]}
+{"text": "сработал алерт по заполнению persistent volume claim", "labels": ["alerts"]}
+{"text": "Grafana шлёт критический алерт о недоступности неймспейса", "labels": ["alerts"]}
+{"text": "алерт о росте задержки записи на диск узла", "labels": ["alerts", "anomalies"]}
+{"text": "уведомление о том, что под завис в состоянии Pending", "labels": ["alerts"]}
+{"text": "алерт по превышению лимита памяти контейнером", "labels": ["alerts", "anomalies"]}
+{"text": "прилетел алерт о деградации доступности после релиза", "labels": ["alerts", "releases"]}
+{"text": "алерт о недоступности зависимого сервиса очередей", "labels": ["alerts", "dependencies"]}
+{"text": "сработал сетевой алерт по росту таймаутов соединений", "labels": ["alerts", "network"]}
+{"text": "оповещение о том, что узел ушёл под давление памяти", "labels": ["alerts", "anomalies"]}
+{"text": "алерт по всплеску рестартов подов в неймспейсе", "labels": ["alerts", "anomalies"]}
+{"text": "под не может открыть соединение с сервисом, порт закрыт", "labels": ["network"]}
+{"text": "dns-запрос из пода завершается server misbehaving", "labels": ["network"]}
+{"text": "между узлами кластера растёт число retransmit пакетов", "labels": ["network", "anomalies"]}
+{"text": "ingress-контроллер не проксирует запросы, upstream unreachable", "labels": ["network"]}
+{"text": "сервис недоступен по кластерному ip, no route to host", "labels": ["network"]}
+{"text": "tls handshake к бэкенду обрывается на середине", "labels": ["network"]}
+{"text": "соединения к базе висят и отваливаются по таймауту", "labels": ["network", "dependencies"]}
+{"text": "сетевая политика после изменения заблокировала трафик подов", "labels": ["network", "releases"]}
+{"text": "медленный dns-резолвинг тормозит все исходящие запросы", "labels": ["network", "anomalies"]}
+{"text": "нужно сопоставить всплеск ошибок с последним выкатом", "labels": ["releases", "anomalies"]}
+{"text": "подозреваю регрессию после мерджа в основную ветку", "labels": ["releases"]}
+{"text": "сравни метрики до и после деплоя новой версии образа", "labels": ["releases"]}
+{"text": "откат к предыдущему тегу образа не убрал проблему", "labels": ["releases"]}
+{"text": "канареечный выкат показывает рост числа ошибок", "labels": ["releases", "logs"]}
+{"text": "после изменения конфигурации сервис ведёт себя иначе", "labels": ["releases"]}
+{"text": "свежий релиз сломал совместимость api с потребителями", "labels": ["releases", "dependencies"]}
+{"text": "выкат новой версии совпал с началом деградации", "labels": ["releases", "anomalies"]}
+{"text": "в логах пода timeout waiting for connection from pool", "labels": ["logs", "dependencies"]}
+{"text": "контейнер логирует invalid memory address or nil pointer", "labels": ["logs"]}
+{"text": "в логах повторяется failed to write to disk, ENOSPC", "labels": ["logs", "anomalies"]}
+{"text": "под логирует could not resolve host при старте", "labels": ["logs", "network"]}
+{"text": "сервис не готов: ждёт доступности зависимой базы данных", "labels": ["dependencies"]}
+{"text": "каскадный отказ: падение одного пода тянет соседние сервисы", "labels": ["dependencies", "anomalies"]}
+{"text": "зависимость по внешнему api отвечает ошибками", "labels": ["dependencies", "logs"]}
+{"text": "резкий рост числа горутин указывает на утечку", "labels": ["anomalies"]}
+{"text": "график потребления памяти пода уходит в пилу", "labels": ["anomalies"]}
+{"text": "внезапное падение rps без изменения входящей нагрузки", "labels": ["anomalies"]}
+{"text": "под в статусе ImagePullBackOff, не может стянуть образ", "labels": ["logs", "releases"]}
+{"text": "контейнер не проходит liveness probe и постоянно перезапускается", "labels": ["anomalies", "logs"]}
+{"text": "узел кластера ушёл в NotReady, поды с него вытесняются", "labels": ["anomalies"]}
+{"text": "kubelet на узле логирует ошибки монтирования тома", "labels": ["logs"]}
+{"text": "исчерпаны эфемерные диски узла, поды выселяются", "labels": ["anomalies"]}
+{"text": "сработал алерт о том, что нода недоступна для планировщика", "labels": ["alerts", "anomalies"]}
+{"text": "запросы к сервису возвращают 504 gateway timeout по сети", "labels": ["network", "anomalies"]}
+{"text": "после выката образа под падает на инициализации конфигурации", "labels": ["releases", "logs"]}
+{"text": "зависимый сервис аутентификации отвечает 401 на все запросы", "labels": ["dependencies", "logs"]}
+{"text": "метрика насыщения диска пересекла порог, алерт сработал", "labels": ["alerts", "anomalies"]}
+{"text": "трафик между зонами кластера тормозит, латентность выросла", "labels": ["network", "anomalies"]}
+{"text": "релиз откатили, но часть подов застряла на новой версии", "labels": ["releases", "anomalies"]}
+{"text": "в логах пода произошёл дедлок при обращении к очереди", "labels": ["logs", "dependencies"]}
+{"text": "horizontal pod autoscaler не масштабирует под ростом нагрузки", "labels": ["anomalies"]}
+{"text": "алерт по времени ответа сервиса пришёл вместе с ростом ошибок", "labels": ["alerts", "logs", "anomalies"]}
