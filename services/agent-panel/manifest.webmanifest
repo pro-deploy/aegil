@@ -1,8 +1,8 @@
 {
-  "name": "Aegil · операторская консоль",
+  "name": "Aegil — operator console",
   "short_name": "Aegil",
-  "description": "Операторская консоль автономного SRE-агента Aegil для Kubernetes: чат с агентом, центр инцидентов, диагностика и управляемый ремонт.",
-  "lang": "ru",
+  "description": "Operator console for the autonomous Aegil SRE agent for Kubernetes: agent chat, incident center, diagnostics and guarded remediation.",
+  "lang": "en",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
