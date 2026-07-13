@@ -1,66 +1,70 @@
-# rca: сервис детерминированного разбора первопричин Aegil
+# rca: the deterministic root-cause-analysis service of Aegil
 
-Сервис разбора первопричин (Root Cause Analysis, далее RCA), это детерминированная половина продукта
-Aegil, отвечающая на вопрос, что и почему сломалось. Факты о логах и метриках считает
-детерминированный код, а языковая модель подключается только на краях (для разбора запроса инженера
-и формулировки отчёта по уже посчитанным фактам). Гарантию вердикту даёт код, а не нейросеть.
+> **English** | [Русский](README.ru.md)
 
-## Детерминированное ядро (без внешних зависимостей)
+The Root Cause Analysis (RCA) service is the deterministic half of the Aegil product, answering the
+question of what broke and why. Facts about logs and metrics are computed by deterministic code, and
+the language model is connected only at the edges (for parsing the engineer's request and for
+formulating a report over already-computed facts). The guarantee of the verdict is given by code,
+not by a neural network.
 
-Нормализация `normalize.py` домен-агностична: разбирает и структурный лог в формате JSON, и
-произвольную текстовую строку лога пода (паника языка Go, стектрейс, сообщение системы защиты от
-нехватки памяти, запись о `CrashLoopBackOff`), извлекая уровень серьёзности и симптомы прямо из
-текста, а не из чужого структурного поля. Прежний движок читал только внутренний JSON-конверт
-наследной платформы и на чужом кластере был слеп; нынешний принимает произвольный текст.
+## The deterministic core (without external dependencies)
 
-Агрегатор `aggregator.py` за один проход сложности O(N) считает восемнадцать блоков фактов, в том
-числе временну́ю канву окна и активность по сервисам во времени, и группирует строки по сквозному
-идентификатору трассы по десяти корреляционным полям. Каталог логовых детекторов `detectors.py`
-(D1-D12) потребляет факты и базовую линию и выдаёт веса как отношения правдоподобия; детекторы
-перерыва в логах, молчания источника и демпфера восстановления опираются на временну́ю канву, а
-структурный сосед на граф зависимостей из фактов. Каталог метрических детекторов `metric_detectors.py`
-(ML1-ML13) читает метрики окна и выражает свой вес в том же формате отношения правдоподобия, поэтому
-логи и метрики попадают в единый скоринг.
+Normalization `normalize.py` is domain-agnostic: it parses both a structured log in JSON format and
+an arbitrary text line of a pod's log (a Go-language panic, a stack trace, a message from the
+out-of-memory protection system, a `CrashLoopBackOff` record), extracting the severity level and
+the symptoms straight from the text rather than from someone else's structural field. The former
+engine read only the internal JSON envelope of the legacy platform and was blind in someone else's
+cluster; the current one accepts arbitrary text.
 
-Скоринг `scoring.py` переводит сработавшие детекторы, логовые и метрические, в число уверенности
-байесовским обновлением в шансах с группировкой коррелированных детекторов по максимуму, гейтом
-значимости, потолком 0,999, демпфером восстановления, коэффициентом полноты и полосами доверия.
-Сборка `verdict.py` даёт вердикт по пятиполевой схеме (статус, уверенность, первопричина,
-свидетельства, действие) с реестром свидетельств и гардом «нет цитаты, нет утверждения»: каждое
-утверждение опирается на дословную цитату из лога или метрики. Оркестрация `pipeline.py` (функция
-`analyze`) связывает всё в один детерминированный проход.
+The aggregator `aggregator.py` computes, in a single pass of O(N) complexity, eighteen blocks of
+facts, including the window's time canvas and the activity by service over time, and groups lines by
+a cross-cutting trace identifier over ten correlation fields. The catalog of log detectors
+`detectors.py` (D1-D12) consumes the facts and the baseline and emits weights as likelihood ratios;
+the detectors of a log gap, source silence and a recovery damper rely on the time canvas, and the
+structural neighbor relies on the dependency graph from the facts. The catalog of metric detectors
+`metric_detectors.py` (ML1-ML13) reads the window's metrics and expresses its weight in the same
+likelihood-ratio format, so logs and metrics enter a single scoring.
 
-## Маршрутизация запроса и активное обучение
+Scoring `scoring.py` translates the triggered detectors, both log and metric, into a confidence
+number by Bayesian updating in odds with the grouping of correlated detectors by maximum, a
+significance gate, a ceiling of 0.999, a recovery damper, a completeness coefficient and confidence
+bands. The assembly `verdict.py` produces a verdict in a five-field schema (status, confidence, root
+cause, evidence, action) with an evidence registry and a "no quote, no assertion" guard: every
+assertion rests on a verbatim quote from a log or a metric. The orchestration `pipeline.py` (the
+`analyze` function) links everything into a single deterministic pass.
 
-Каскад `cascade.py` относит реплику инженера к одной из шести диагностических веток лёгким обученным
-классификатором SetFit (`setfit_model.py`, `router.py`). При уверенности ниже порога запрос
-эскалируется к большой модели-учителю, её решение записывается новым размеченным примером в
-хранилище `store.py`, а отдельный сервис-тренер `rca-trainer` позже дообучает лёгкий классификатор.
-При сбоях действует детерминированный ключевой фолбэк.
+## Request routing and active learning
 
-## Обвязка
+The cascade `cascade.py` assigns the engineer's utterance to one of six diagnostic branches with a
+lightweight trained SetFit classifier (`setfit_model.py`, `router.py`). At a confidence below the
+threshold, the request is escalated to a large teacher model, its decision is recorded as a new
+labeled example in the store `store.py`, and a separate trainer service `rca-trainer` later further
+trains the lightweight classifier. On failures, a deterministic keyword fallback operates.
 
-Читатель `loki.py` забирает окно логов из Loki запросом `query_range` с обратной пагинацией по
-времени и сохраняет сырьё строки для дословных цитат; при заданном адресе Prometheus модуль
-`metrics.py` подтягивает метрики того же окна. Приложение `app.py` (FastAPI) отдаёт `GET /health` и
-`POST /analyze`; последнее принимает окно логов напрямую или читает его из Loki (с базовой линией со
-сдвигом на сутки) и возвращает факты, детекторы, скоринг и вердикт. Кэш `cache.py` бережёт повторные
-обращения, а `report.py` формирует читаемый отчёт. Сам сервис логирует структурным JSON
-(`service=rca`, `trace_id`).
+## The wiring
 
-## Тесты
+The reader `loki.py` fetches a window of logs from Loki with a `query_range` request with reverse
+pagination by time and preserves the raw line for verbatim quotes; when a Prometheus address is set,
+the `metrics.py` module pulls the metrics of the same window. The application `app.py` (FastAPI)
+serves `GET /health` and `POST /analyze`; the latter accepts a window of logs directly or reads it
+from Loki (with a baseline shifted by a day) and returns the facts, the detectors, the scoring and
+the verdict. The cache `cache.py` conserves repeated calls, and `report.py` forms a readable report.
+The service itself logs in structured JSON (`service=rca`, `trace_id`).
 
-Ядро проверяется модульными тестами без сети и без внешних зависимостей:
+## Tests
+
+The core is verified by unit tests that need no network and no external dependencies:
 
 ```
 cd services/rca
 for t in test_*.py; do python3 "$t"; done
 ```
 
-## Границы применимости
+## Bounds of applicability
 
-Веса детекторов и пороги представлены как рабочие параметры: размеченного набора инцидентов для
-калибровки пока нет, поэтому значения по умолчанию заданы экспертно и нейтрально. Часть детекторов
-честно ограничена входом окна: детекторы базовой линии требуют сравнения с прошлыми сутками, а
-структурный сосед требует наблюдённого графа зависимостей. Строгая калибровка на исторических
-инцидентах остаётся необходимым следующим шагом.
+The detector weights and thresholds are presented as working parameters: a labeled set of incidents
+for calibration does not yet exist, so the default values are set by expert judgment and neutrally.
+Some detectors are honestly limited by the window input: the baseline detectors require a comparison
+with the previous day, and the structural neighbor requires an observed dependency graph. Strict
+calibration on historical incidents remains the necessary next step.

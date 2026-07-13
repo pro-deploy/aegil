@@ -1,133 +1,132 @@
-# Дорожная карта aegil: чего не хватает и где это добавить
+# aegil roadmap: what is missing and where to add it
 
-Документ фиксирует пробелы продукта относительно ожиданий инженеров эксплуатации
-(SRE), инженеров разработки и эксплуатации (DevOps) и инженеров сопровождения моделей
-машинного обучения (MLOps и LLMOps), а также относительно требований рынков
-Соединённых Штатов Америки и Российской Федерации. Каждый пункт привязан к модулю
-кодовой базы, куда его следует добавить, и снабжён оценкой приоритета. Цель документа
-не в том, чтобы всё реализовать разом, а в том, чтобы ничего из недостающего не
-потерялось и порядок работ был очевиден.
+> **English** | [Русский](ROADMAP.ru.md)
 
-## 1. Инженерное ядро: общий для всех рынков фундамент
+This document records the product's gaps relative to the expectations of Site Reliability
+Engineering (SRE) engineers, Development and Operations (DevOps) engineers and Machine Learning
+model operations (MLOps and LLMOps) engineers, as well as relative to the requirements of the
+markets of the United States of America and the Russian Federation. Each item is tied to the
+module of the codebase where it should be added, and is annotated with a priority estimate. The
+purpose of the document is not to implement everything at once, but to ensure that nothing missing
+gets lost and that the order of work is obvious.
 
-### 1.1. Язык целей уровня обслуживания (высокий приоритет)
+## 1. The engineering core: a foundation common to all markets
 
-Сейчас автономный ремонт запускается от абстрактной уверенности байесовского скоринга,
-а зрелые команды эксплуатации думают в терминах целей уровня обслуживания (SLO),
-показателей уровня обслуживания (SLI) и бюджета ошибок. Не хватает слоя, который
-связывает вердикт первопричины с нарушением конкретного бизнес-порога и лишь тогда
-поднимает автономию. Добавить конфигурацию целей (доступность, доля успешных запросов,
-задержка на перцентиле) и расчёт остатка бюджета ошибок, а гейт опасности в
-`services/agent-panel/policy.py` и цикл в `services/agent-panel/autopilot.py` увязать с
-исчерпанием бюджета: пока бюджет цел, действовать консервативно, при его выгорании
-разрешать более решительный ремонт. Это переводит продукт на язык, которым говорят
-покупатели уровня SRE.
+### 1.1. A service-level-objective language (high priority)
 
-### 1.2. Полнота телеметрии: метрики и трассировки (высокий приоритет)
+At present, autonomous repair is triggered by the abstract confidence of the Bayesian scoring,
+whereas mature operations teams think in terms of service-level objectives (SLO), service-level
+indicators (SLI) and an error budget. What is missing is a layer that links a root-cause verdict
+to the violation of a specific business threshold and only then raises autonomy. Add a
+configuration of objectives (availability, share of successful requests, latency at a percentile)
+and a calculation of the remaining error budget, and tie the danger gate in
+`services/agent-panel/policy.py` and the loop in `services/agent-panel/autopilot.py` to budget
+exhaustion: while the budget is intact, act conservatively; when it burns down, permit more
+decisive repair. This moves the product to the language spoken by SRE-level buyers.
 
-Движок первопричин в `services/rca` читает только логи. Для полноценного разбора нужны
-ещё метрики и распределённые трассировки по стандарту OpenTelemetry. Добавить в
-агрегатор `services/rca/aggregator.py` и каталог детекторов `services/rca/detectors.py`
-приём временных рядов метрик (загрузка процессора и памяти, доля ошибок, задержки) и
-корреляцию по идентификатору трассы через отдельный приёмник трассировок. Это закрывает
-класс инцидентов, невидимых в логах: насыщение ресурсов, деградацию задержек,
-исчерпание пулов соединений. Приёмник телеметрии оформить рядом с `services/rca/loki.py`
-как параллельный источник, а не переписывать существующий.
+### 1.2. Telemetry completeness: metrics and traces (high priority)
 
-### 1.3. Доказуемая безопасность самого агента (высокий приоритет)
+The root-cause engine in `services/rca` reads only logs. For full analysis it also needs metrics
+and distributed traces per the OpenTelemetry standard. Add to the aggregator
+`services/rca/aggregator.py` and the detector catalog `services/rca/detectors.py` the intake of
+metric time series (processor and memory load, error share, latencies) and correlation by trace
+identifier through a separate trace receiver. This closes the class of incidents invisible in
+logs: resource saturation, latency degradation, connection-pool exhaustion. Arrange the telemetry
+receiver next to `services/rca/loki.py` as a parallel source, rather than rewriting the existing
+one.
 
-Автономный агент, имеющий право менять кластер, сам становится поверхностью атаки.
-Аудит действий в `services/agent-panel/audit.py` и гарды в `services/agent-panel/guards.py`
-уже есть, но не хватает трёх вещей. Во-первых, защиты от инъекций в подсказку и подмены
-инструментов: содержимое логов и вывод инструментов должны считаться данными, а не
-командами, и это правило нужно зашить в системную подсказку и в разбор ответа модели в
-`services/agent-panel/agent_exec.py`. Во-вторых, обязательного участия человека в контуре
-для необратимых операций с криптографически одноразовым подтверждением, что частично
-реализовано и должно стать неотключаемым для класса destructive. В-третьих, принципа
-наименьших привилегий на уровне ролевой модели Kubernetes: манифесты должны раздавать
-права строго по пространству имён, без кластерных ролей по умолчанию.
+### 1.3. Provable safety of the agent itself (high priority)
 
-### 1.4. Наблюдаемость самого инференса, слой MLOps и LLMOps (средний приоритет)
+An autonomous agent with the right to change the cluster itself becomes an attack surface. Action
+auditing in `services/agent-panel/audit.py` and the guards in `services/agent-panel/guards.py`
+already exist, but three things are missing. First, protection against prompt injection and tool
+substitution: the contents of logs and tool output must be treated as data, not commands, and this
+rule must be wired into the system prompt and into the parsing of the model's response in
+`services/agent-panel/agent_exec.py`. Second, a mandatory human in the loop for irreversible
+operations with a cryptographically one-time confirmation, which is partly implemented and must
+become non-disableable for the destructive class. Third, the principle of least privilege at the
+level of the Kubernetes role model: manifests must grant rights strictly per namespace, without
+cluster roles by default.
 
-Продукт использует языковую модель, но не наблюдает за ней. Нужен сбор метрик инференса:
-задержка ответа, число входных и выходных токенов, оценочная стоимость, доля отказов и
-таймаутов модели, а также контроль дрейфа качества ответов через фиксированный набор
-проверочных запросов. Добавить это в клиент модели `services/agent-panel/llm.py` как
-обёртку с метриками и вынести на отдельную панель в интерфейсе. Для команд MLOps это
-превращает aegil из потребителя модели в инструмент, который сам следит за
-здоровьем модели, включая обнаружение галлюцинаций через гард заземления, уже
-заложенный в `services/rca/verdict.py`.
+### 1.4. Observability of the inference itself, the MLOps and LLMOps layer (medium priority)
 
-### 1.5. Обучение на исходах и постмортемы (средний приоритет)
+The product uses a language model but does not observe it. What is needed is the collection of
+inference metrics: response latency, the number of input and output tokens, estimated cost, the
+share of model refusals and timeouts, and control of quality drift in responses through a fixed set
+of check requests. Add this to the model client `services/agent-panel/llm.py` as a metrics wrapper
+and surface it on a separate panel in the interface. For MLOps teams this turns aegil from a
+consumer of the model into a tool that itself watches the model's health, including detection of
+hallucinations through the grounding guard already built into `services/rca/verdict.py`.
 
-Замыкание исхода ремонта в обучающий пример частично заложено в `services/rca-trainer`,
-но не хватает автоматической генерации постмортема по завершённому инциденту: сводка
-хронологии, первопричина, предпринятые действия, что сработало, что нет, и предложения
-по предотвращению. Это ценится и в культуре безобвинительных разборов США, и в
-отчётности российских служб эксплуатации. Реализовать как формирование отчёта по уже
-посчитанным фактам через модель в `services/agent-panel`, с сохранением в ленту
-инцидентов.
+### 1.5. Learning from outcomes and postmortems (medium priority)
 
-## 2. Рынок Соединённых Штатов Америки
+Closing a repair outcome into a training example is partly built into `services/rca-trainer`, but
+what is missing is the automatic generation of a postmortem for a completed incident: a summary of
+the timeline, the root cause, the actions taken, what worked, what did not, and suggestions for
+prevention. This is valued both in the blameless-review culture of the United States and in the
+reporting of Russian operations services. Implement it as the formation of a report over
+already-computed facts through the model in `services/agent-panel`, with saving into the incident
+feed.
 
-Здесь продукт продаётся как ещё один аудируемый узел в отлаженном конвейере, поэтому
-решают открытые интеграции и соответствие принятым практикам.
+## 2. The United States of America market
 
-Не хватает интеграций с существующей экосистемой оповещения и наблюдаемости: приёма и
-отправки событий в системы дежурств (PagerDuty, Opsgenie), двусторонней связи с
-Grafana и системами метрик (Prometheus, Datadog), а также публикации собственных метрик
-aegil в формате OpenMetrics. Это оформить как набор адаптеров каналов рядом с
-существующим слоем оповещений.
+Here the product is sold as one more auditable node in a well-tuned pipeline, so open integrations
+and conformance with accepted practices decide the matter.
 
-Не хватает поддержки практики хранения всего как кода и управления через репозиторий:
-интеграции с ArgoCD и Flux, чтобы ремонт шёл не прямым изменением кластера, а через
-запрос на слияние или синхронизацию, и политики как кода через OPA Gatekeeper или
-Kyverno, чтобы разрешённые агенту действия описывались декларативно и проверялись вне
-кода агента.
+Missing are integrations with the existing alerting and observability ecosystem: the intake and
+dispatch of events into on-call systems (PagerDuty, Opsgenie), two-way connection with Grafana and
+metric systems (Prometheus, Datadog), and the publication of aegil's own metrics in the
+OpenMetrics format. Arrange this as a set of channel adapters next to the existing alerting layer.
 
-Не хватает безопасности цепочки поставок: генерации перечня состава программного
-обеспечения (SBOM) для собираемых образов, подписи артефактов через Sigstore и
-соответствия уровням гарантий целостности цепочки поставок (SLSA). Это добавить в
-сценарий сборки `deploy/build.sh` и в конвейер непрерывной интеграции.
+Missing is support for the everything-as-code practice and management through a repository:
+integration with ArgoCD and Flux so that repair proceeds not by direct change to the cluster but
+through a merge request or synchronization, and policy as code through OPA Gatekeeper or Kyverno so
+that the actions permitted to the agent are described declaratively and checked outside the agent's
+code.
 
-Не хватает подтверждённого соответствия рамкам аудита: журналирование и разграничение
-доступа под требования SOC 2 и стандарта ISO 27001, а для работы с государственным
-сектором перспектива соответствия программе FedRAMP. Технически это опирается на уже
-имеющийся неизменяемый аудит, но требует формализации политик хранения и доступа.
+Missing is supply-chain security: generation of a software bill of materials (SBOM) for the built
+images, signing of artifacts through Sigstore, and conformance with the Supply-chain Levels for
+Software Artifacts (SLSA). Add this to the build script `deploy/build.sh` and to the
+continuous-integration pipeline.
 
-## 3. Рынок Российской Федерации
+Missing is confirmed conformance with audit frameworks: logging and access separation under the
+requirements of SOC 2 and the ISO 27001 standard, and, for work with the public sector, the
+prospect of conformance with the FedRAMP program. Technically this rests on the already-existing
+immutable audit, but requires the formalization of retention and access policies.
 
-Здесь вес смещается в автономность от внешних сервисов и соответствие национальному
-регулированию, и это становится не ограничением, а коммерческим преимуществом.
+## 3. The Russian Federation market
 
-Ключевое уже частично сделано: работа в закрытом контуре без внешнего интернета и
-строго на своей модели, что подтверждено запуском на локальном сервере с моделью
-семейства Gemma в vLLM. Нужно довести режим полной автономии от облака до
-конфигурационного умолчания и убрать любые обязательные обращения наружу.
+Here the weight shifts toward autonomy from external services and conformance with national
+regulation, and this becomes not a constraint but a commercial advantage.
 
-Не хватает подтверждённой совместимости с отечественными платформами контейнерной
-оркестрации (Deckhouse, платформа Штурвал) и операционными системами (Astra Linux,
-РЕД ОС): манифесты и образы должны проверяться и на них, а базовые образы собираться на
-отечественной или нейтральной основе, пригодной для закрытого контура.
+The key part is already partly done: operation in a closed loop without external internet and
+strictly on one's own model, which is confirmed by a run on a local server with a model of the
+Gemma family in vLLM. What is needed is to bring the full-autonomy-from-cloud mode to a
+configuration default and to remove any mandatory outbound calls.
 
-Не хватает выполнения требований Федерального закона о персональных данных (152-ФЗ):
-разбор логов может захватывать персональные данные, поэтому нужны обезличивание и
-маскирование чувствительных полей на входе агрегатора `services/rca/aggregator.py`,
-хранение данных в контуре заказчика и запись фактов обработки. Дополнительно требования
-Федеральной службы по техническому и экспортному контролю к средствам защиты информации
-влияют на журналирование и разграничение доступа.
+Missing is confirmed compatibility with domestic container-orchestration platforms (Deckhouse, the
+Shturval platform) and operating systems (Astra Linux, RED OS): the manifests and images must be
+tested on them too, and the base images must be built on a domestic or neutral foundation suitable
+for a closed loop.
 
-Не хватает перспективы включения в реестр отечественного программного обеспечения:
-это отдельная организационная задача, но она напрямую открывает государственные закупки,
-поэтому её стоит держать целью и заранее выстраивать сборку и происхождение компонентов
-так, чтобы требованиям реестра можно было удовлетворить.
+Missing is fulfillment of the requirements of the Federal Law on Personal Data (152-FZ): log
+analysis may capture personal data, so anonymization and masking of sensitive fields on the input
+of the aggregator `services/rca/aggregator.py` are needed, along with storage of data within the
+customer's loop and recording of the facts of processing. Additionally, the requirements of the
+Federal Service for Technical and Export Control for information-protection tools affect logging
+and access separation.
 
-## 4. Порядок работ
+Missing is the prospect of inclusion in the register of domestic software: this is a separate
+organizational task, but it directly opens up government procurement, so it is worth keeping as a
+goal and building the assembly and provenance of components in advance so that the register's
+requirements can be satisfied.
 
-Сначала общий фундамент из раздела первого, потому что он одинаково нужен обоим рынкам
-и повышает ценность продукта для всех трёх ролей: язык целей уровня обслуживания, приём
-метрик и трассировок, безопасность агента. Затем, в зависимости от целевого заказчика,
-углубление либо в интеграции и комплаенс рынка США из раздела второго, либо в
-автономность от облака и национальное соответствие рынка России из раздела третьего.
-Слой наблюдаемости за самой моделью и генерация постмортемов идут параллельно как
-усиление, ценное на обоих рынках.
+## 4. The order of work
+
+First the common foundation from section one, because it is equally needed by both markets and
+raises the product's value for all three roles: the service-level-objective language, the intake
+of metrics and traces, and agent safety. Then, depending on the target customer, deepening either
+into the integrations and compliance of the United States market from section two, or into
+autonomy from the cloud and national conformance of the Russian market from section three. The
+layer of observability over the model itself and the generation of postmortems proceed in parallel
+as a reinforcement valuable in both markets.

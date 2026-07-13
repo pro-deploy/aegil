@@ -1,96 +1,103 @@
 # node-agent
 
-Привилегированный узловой агент продукта aegil. Это крошечный HTTP-сервер на стандартной
-библиотеке Python без внешних зависимостей, который разворачивается объектом DaemonSet по одному
-поду на каждом узле кластера и даёт панели агента возможность исполнять команды эксплуатации прямо
-на хосте узла.
+> **English** | [Русский](README.ru.md)
 
-## Назначение
+The privileged node agent of the aegil product. It is a tiny HTTP server built on the Python
+standard library without external dependencies, which is deployed as a DaemonSet object with one pod
+per cluster node and gives the agent panel the ability to execute operations commands directly on
+the node's host.
 
-Панель aegil это автономный агент эксплуатации, который управляет не только приложением
-через API Kubernetes, но и самими узлами. Значительная часть операций эксплуатации живёт мимо API
-Kubernetes: чистка диска, prune образов и слоёв docker и containerd, наблюдение через df, du, top,
-free, uptime, загрузка процессора по ядрам, снятие зависшего процесса, перезапуск системных служб
-через systemctl. Всё это выполняется на самом хосте. node-agent исполняет переданный список
-аргументов в пространстве имён хоста через `nsenter -t 1 -m -u -i -n -- <argv>` и возвращает код
-возврата, вывод и длительность.
+## Purpose
 
-## Почему привилегированный
+The aegil panel is an autonomous operations agent that manages not only the application through the
+Kubernetes API but also the nodes themselves. A significant part of operations lives past the
+Kubernetes API: disk cleanup, prune of docker and containerd images and layers, observation through
+df, du, top, free, uptime, per-core processor load, killing a hung process, restarting system
+services through systemctl. All of this is performed on the host itself. node-agent executes the
+passed list of arguments in the host's namespaces through `nsenter -t 1 -m -u -i -n -- <argv>` and
+returns the return code, the output and the duration.
 
-Под входит в пространства имён процесса с идентификатором PID 1 (самого хоста) и потому обладает
-правами суперпользователя на узле. Это осознанная цена возможности реально чинить узел (освобождать
-диск, снимать процессы, перезапускать службы). Полный флаг `privileged: true` при этом намеренно не
-используется: для входа через nsenter в пространства имён mount, uts, ipc и net процесса PID 1
-достаточно `hostPID: true` совместно с капабилити `SYS_ADMIN` (операция setns над этими
-пространствами) и `SYS_PTRACE` (операции над процессами хоста). Файловая система контейнера
-смонтирована только для чтения, эскалация привилегий запрещена, все прочие капабилити сброшены.
-Из-за привилегированного характера поверхность закрыта несколькими рамками безопасности сразу.
+## Why privileged
 
-## Сетевая модель доступа
+The pod enters the namespaces of the process with identifier PID 1 (the host itself) and therefore
+has superuser rights on the node. This is a deliberate price for the ability to actually repair the
+node (free the disk, kill processes, restart services). The full `privileged: true` flag is
+deliberately not used: for entry through nsenter into the mount, uts, ipc and net namespaces of the
+PID 1 process, `hostPID: true` together with the `SYS_ADMIN` capability (the setns operation over
+these namespaces) and `SYS_PTRACE` (operations over host processes) is sufficient. The container's
+file system is mounted read-only, privilege escalation is forbidden, and all other capabilities are
+dropped. Because of its privileged nature, the surface is closed off by several security frames at
+once.
 
-Сервис слушает порт `AEGIL_NODEAGENT_PORT` (по умолчанию 9110) на адресе пода. Порт узла НЕ
-публикуется: в манифесте нет ни hostPort, ни hostNetwork, поэтому god-mode-эндпоинт не выведен на
-интерфейсы узла и недостижим из локальной сети и с управляющего узла. Панель обращается к агенту
-строго внутрикластерно, по адресу пода через внутренний Service (ClusterIP, без публикации наружу).
-Дополнительно действует сетевая политика NetworkPolicy, которая пропускает входящий трафик на порт
-агента только от пода панели (по её метке) и отбрасывает всё прочее.
+## The network access model
+
+The service listens on the port `AEGIL_NODEAGENT_PORT` (default 9110) on the pod's address. The
+node port is NOT published: there is neither hostPort nor hostNetwork in the manifest, so the
+god-mode endpoint is not surfaced onto the node's interfaces and is unreachable from the local
+network and from the control node. The panel calls the agent strictly in-cluster, at the pod's
+address through an internal Service (ClusterIP, without external publication). Additionally, a
+NetworkPolicy operates that admits incoming traffic to the agent's port only from the panel pod (by
+its label) and drops everything else.
 
 ## API
 
-Эндпоинт `GET /health` возвращает JSON вида `{"status":"ok","node":"<node>"}` и служит для
-readiness-пробы, токен не требуется.
+The `GET /health` endpoint returns JSON of the form `{"status":"ok","node":"<node>"}` and serves the
+readiness probe; a token is not required.
 
-Эндпоинт `POST /run` исполняет команду. Аутентификация выполняется ДО чтения тела запроса: в
-заголовке обязателен `X-NodeAgent-Token`, который сверяется с секретом `AEGIL_NODEAGENT_TOKEN`
-за постоянное время (`hmac.compare_digest`, оба значения приводятся к байтам). Без совпадения
-возвращается 401, тело запроса при этом не читается и ничего не исполняется (fail-closed). Тело
-запроса это JSON вида `{"argv":["df","-h","/"],"timeout":30}`. Поле `argv` обязано быть непустым
-списком строк с ограничением на число элементов и на суммарную длину, а `timeout` числом в пределах
-от 1 до 600 секунд; некорректное тело ведёт к ответу 400, слишком большое тело к ответу 413. Ответ
-имеет вид `{"exit_code":int,"stdout":str,"stderr":str,"duration_ms":int,"node":str}`. Вывод по
-каждому из потоков stdout и stderr ограничивается 256 килобайтами, при обрезке добавляется пометка
-`...[обрезано]`. При превышении таймаута возвращается `exit_code`, равный 124, соответствующая
-пометка в stderr, и при этом снимается вся группа процессов команды, а не только прямой потомок,
-поэтому на хосте не остаётся процессов сирот.
+The `POST /run` endpoint executes a command. Authentication is performed BEFORE reading the request
+body: the header must contain `X-NodeAgent-Token`, which is compared against the secret
+`AEGIL_NODEAGENT_TOKEN` in constant time (`hmac.compare_digest`, both values cast to bytes). Without
+a match, 401 is returned, the request body is not read at that point and nothing is executed
+(fail-closed). The request body is JSON of the form `{"argv":["df","-h","/"],"timeout":30}`. The
+`argv` field must be a non-empty list of strings with a limit on the number of elements and on the
+total length, and `timeout` a number in the range from 1 to 600 seconds; a malformed body leads to a
+400 response, a too-large body to a 413 response. The response has the form
+`{"exit_code":int,"stdout":str,"stderr":str,"duration_ms":int,"node":str}`. The output on each of
+the stdout and stderr streams is limited to 256 kilobytes, and on truncation the mark
+`...[truncated]` is added. On a timeout overrun an `exit_code` of 124 is returned, along with the
+corresponding mark in stderr, and the whole process group of the command is killed, not only the
+direct descendant, so no orphan processes remain on the host.
 
-## Переменные окружения
+## Environment variables
 
-Вся конфигурация продукта живёт под единым префиксом `AEGIL_`. Переменная `AEGIL_NODE_NAME`
-задаёт имя узла и приходит через downward API из `spec.nodeName`; она возвращается в ответах и
-попадает в логи. Переменная `AEGIL_NODEAGENT_TOKEN` это общий секрет доступа, тот же самый, что
-кладётся в секрет панели под тем же ключом. Переменная `AEGIL_NODEAGENT_PORT` задаёт порт
-прослушивания и по умолчанию равна 9110.
+All product configuration lives under the single `AEGIL_` prefix. The `AEGIL_NODE_NAME` variable
+sets the node name and arrives through the downward API from `spec.nodeName`; it is returned in
+responses and lands in the logs. The `AEGIL_NODEAGENT_TOKEN` variable is the shared access secret,
+the same one that is placed in the panel secret under the same key. The `AEGIL_NODEAGENT_PORT`
+variable sets the listening port and defaults to 9110.
 
-## Безопасность
+## Security
 
-Доступ закрыт общим секретом: без валидного заголовка `X-NodeAgent-Token` эндпоинт `/run` отвечает
-401 и не исполняет ничего, и точно так же fail-closed ведёт себя сервис, если серверный секрет не
-задан вовсе. Аутентификация выполняется до чтения тела, поэтому неаутентифицированный запрос не
-приводит ни к какому чтению и исполнению. Сервис доступен только внутрикластерно (нет Ingress, нет
-публикации порта узла) и дополнительно огорожен сетевой политикой. Ключевая гарантия против
-инъекции оболочки состоит в том, что команда всегда передаётся как список аргументов (argv), а
-исполнение идёт через subprocess без `shell=True` и без `sh -c`. Метасимволы оболочки внутри argv
-остаются литеральными аргументами и не интерпретируются. Разделитель `--` в префиксе nsenter
-отсекает попытку подсунуть в argv флаги самого nsenter: всё после `--` трактуется как исполняемая
-программа и её аргументы, а не как опции nsenter. Дочернему процессу передаётся очищенное окружение
-без секретов агента, поэтому исполненная на узле команда не может прочитать токен через
-`/proc/self/environ`. Против неаутентифицированного медленного потока соединений (slowloris) на
-сокете выставлен таймаут, а размер тела запроса ограничен сверху, чтобы огромный `Content-Length`
-не увёл под в OOM.
+Access is closed off by a shared secret: without a valid `X-NodeAgent-Token` header the `/run`
+endpoint responds 401 and executes nothing, and the service behaves fail-closed in exactly the same
+way if the server-side secret is not set at all. Authentication is performed before reading the
+body, so an unauthenticated request leads to no reading and execution. The service is reachable only
+in-cluster (no Ingress, no publication of the node port) and is additionally fenced off by a network
+policy. The key guarantee against shell injection is that the command is always passed as a list of
+arguments (argv), and execution goes through subprocess without `shell=True` and without `sh -c`.
+Shell metacharacters inside argv remain literal arguments and are not interpreted. The `--` separator
+in the nsenter prefix cuts off an attempt to slip flags of nsenter itself into argv: everything
+after `--` is treated as the program to execute and its arguments, not as options of nsenter. The
+child process is passed a cleaned environment without the agent's secrets, so a command executed on
+the node cannot read the token through `/proc/self/environ`. Against an unauthenticated slow stream
+of connections (slowloris), a timeout is set on the socket, and the size of the request body is
+bounded from above so that a huge `Content-Length` does not drive the pod into OOM.
 
-## Логи
+## Logs
 
-Логи выводятся в stdout в структурном JSON: поля `ts`, `level`, `service`, равное `node-agent`, и
-`msg`, плюс контекст исполнения. В лог записывается только имя исполняемой программы (`argv[0]`) и
-число аргументов, но НЕ значения аргументов, поэтому секреты, переданные аргументами командной
-строки (пароли, токены), не утекают в хранилище логов. Сам токен доступа в лог не попадает никогда.
+Logs are emitted to stdout in structured JSON: the fields `ts`, `level`, `service` equal to
+`node-agent`, and `msg`, plus the execution context. Only the name of the executed program
+(`argv[0]`) and the number of arguments are written to the log, but NOT the argument values, so
+secrets passed as command-line arguments (passwords, tokens) do not leak into the log store. The
+access token itself never lands in the log.
 
-## Тесты
+## Tests
 
-Тесты лежат в `test_node_agent.py` и собираются стандартным сборщиком pytest, сети не требуют.
-Запуск: `cd services/node-agent && python3 -m pytest -q`. Они проверяют валидацию тела, лимиты
-размера, корректную сборку команды nsenter без превращения argv в строку оболочки, отсечение
-разделителем `--` попытки подсунуть флаги nsenter, обрезку вывода, маскирование секретов в логах,
-очистку окружения, fail-closed отказ без токена и на HTTP-уровне порядок «аутентификация до чтения
-тела»: запрос без токена и с неверным токеном возвращает 401 и ничего не исполняет. subprocess при
-этом мокается, реальный nsenter не вызывается.
+The tests are in `test_node_agent.py` and are collected by the standard pytest collector; they need
+no network. To run: `cd services/node-agent && python3 -m pytest -q`. They verify body validation,
+size limits, the correct assembly of the nsenter command without turning argv into a shell string,
+the cutting off by the `--` separator of an attempt to slip in nsenter flags, output truncation,
+the masking of secrets in logs, the cleaning of the environment, the fail-closed refusal without a
+token, and, at the HTTP level, the "authentication before reading the body" ordering: a request
+without a token and with an incorrect token returns 401 and executes nothing. subprocess is mocked
+in the process, and the real nsenter is not called.

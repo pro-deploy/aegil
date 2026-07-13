@@ -1,108 +1,114 @@
-# agent-panel: панель автономного SRE-агента Aegil
+# agent-panel: the panel of the autonomous SRE agent Aegil
 
-Панель агента, это интерактивная половина продукта Aegil. Лёгкий сервис на FastAPI отдаёт
-одностраничный чат в виде мобильного прогрессивного веб-приложения (Progressive Web Application,
-далее PWA), через который оператор наблюдает кластер и узлы, ведёт центр инцидентов и читает журнал
-аудита, а любой запрос на естественном языке исполняется полноценным агентным циклом языковой
-модели. Панель домен-агностична: она не знает и не предполагает имён приложения владельца, а
-оперирует нейтральными сущностями Kubernetes, поэтому один и тот же образ подключается к любому
-кластеру без правки кода.
+> **English** | [Русский](README.ru.md)
 
-Панель наружу не публикуется (сервис типа ClusterIP без Ingress). Вход закрыт токеном оператора,
-доступ идёт через закрытый контур: туннель и проброс порта. Без хотя бы одного валидного оператора
-панель не поднимается (fail-closed).
+The agent panel is the interactive half of the Aegil product. A lightweight FastAPI service serves
+a single-page chat as a mobile Progressive Web Application (PWA) through which the operator observes
+the cluster and the nodes, runs the incident center and reads the audit log, while any
+natural-language request is executed by a full agentic loop of the language model. The panel is
+domain-agnostic: it does not know or assume the names of the owner's application, but operates on
+neutral Kubernetes entities, so the same image connects to any cluster without code changes.
 
-## Что делает
+The panel is not published externally (a ClusterIP-type service without Ingress). Entry is closed
+off by an operator token, and access goes through a closed loop: a tunnel and a port-forward.
+Without at least one valid operator the panel does not come up (fail-closed).
 
-Оператор пишет запрос обычными словами, например «сколько места на узлах и почисти неиспользуемые
-образы», «покажи упавшие поды», «перезапусти сервис X», «что происходит в кластере». Запрос
-исполняет агентный цикл `agent_exec`: языковая модель ведёт многошаговый разбор, на каждом шаге
-наблюдает состояние, рассуждает, действует через инструменты и завершает работу сводкой. Модель
-выступает исполнителем инструментов, а не формулировщиком текста, и объясняет каждый шаг по-русски.
-Если языковая модель не настроена (не задан ключ или адрес), агентный цикл вырождается в
-исполнителя одиночной команды оператора без планирования, и панель остаётся полезной.
+## What it does
 
-Помимо свободного диалога доступны служебные команды: `/help` (список команд и подсказка),
-`/status` (сводка состояния кластера), `/health` (здоровье панели и сервиса разбора логов),
-`/agent` (состояние агента: уровень автономии, бюджет, гарды), `/mode observe|safe_repair|full`
-(смена уровня автономии) и `/report` (суточный отчёт агента). Палитра интерфейса содержит только
-инфраструктурные команды продукта; доменные операции конкретного приложения живут во внешнем
-приложении и вызываются агентом через необязательный адаптер `app_adapter.py`.
+The operator writes a request in ordinary words, for example "how much space is on the nodes and
+clean up unused images", "show the crashed pods", "restart service X", "what is happening in the
+cluster". The request is executed by the agentic loop `agent_exec`: the language model conducts a
+multi-step analysis, at each step observing state, reasoning, acting through tools and finishing
+with a summary. The model acts as an executor of tools, not a formulator of text, and explains
+every step. If the language model is not configured (no key or address is set), the agentic loop
+degenerates into an executor of a single operator command without planning, and the panel remains
+useful.
 
-## Модель безопасности: детерминированный гейт вне модели
+Besides free-form dialogue, service commands are available: `/help` (the list of commands and a
+hint), `/status` (a summary of cluster state), `/health` (the health of the panel and the
+log-analysis service), `/agent` (the agent's state: autonomy level, budget, guards),
+`/mode observe|safe_repair|full` (changing the autonomy level) and `/report` (the agent's daily
+report). The interface palette contains only the product's infrastructure commands; the domain
+operations of a specific application live in the external application and are invoked by the agent
+through the optional adapter `app_adapter.py`.
 
-Гарантию безопасности даёт не языковая модель, а детерминированный код. Классификатор политики
-`policy.py`, это чистая функция, которая относит каждую предлагаемую команду по её фактическому
-списку аргументов к одному из трёх классов: чтение (`read`), обратимый безопасный ремонт
-(`safe_write`) и необратимое действие (`destructive`). Класс решает не ярлык инструмента, выбранный
-моделью, а разбор аргументов, поэтому модель физически не может выдать мутацию за чтение.
-Классификатор устойчив к обходам: имя бинарного файла нормализуется по базовому имени, обёртки-
-запускатели (`env`, `sudo`, `nsenter`, `xargs`) разворачиваются до вложенной команды, пути
-нормализуются против траверсала, а непрозрачная оболочка и SQL из файла трактуются как необратимые.
-Неизвестная мутирующая команда по умолчанию считается необратимой (fail-safe).
+## Security model: a deterministic gate outside the model
 
-Класс команды превращается в решение об исполнении по уровню автономии `AEGIL_AUTONOMY`. На уровне
-`observe` (по умолчанию) агент только наблюдает, ставит диагноз и предлагает, но не действует. На
-уровне `safe_repair` чтение и безопасный ремонт исполняются автономно, а необратимые действия и
-защищённые шаблоны (`AEGIL_PROTECTED_PATTERNS`) требуют подтверждения оператора. На уровне `full`
-автономно исполняется всё, кроме необратимых действий и защищённых шаблонов, которые требуют
-подтверждения всегда, потому что это последняя линия защиты данных от галлюцинации модели.
+The safety guarantee is given not by the language model but by deterministic code. The policy
+classifier `policy.py` is a pure function that assigns every proposed command, by its actual list
+of arguments, to one of three classes: read (`read`), reversible safe repair (`safe_write`) and an
+irreversible action (`destructive`). The class is decided not by the tool label chosen by the
+model but by the parsing of the arguments, so the model physically cannot pass off a mutation as a
+read. The classifier is resistant to bypasses: the binary's name is normalized to its base name,
+launcher wrappers (`env`, `sudo`, `nsenter`, `xargs`) are unwrapped down to the nested command,
+paths are normalized against traversal, and an opaque shell and SQL from a file are treated as
+irreversible. An unknown mutating command is by default treated as irreversible (fail-safe).
 
-Поверх гейта работают гарды против зацикливания `guards.py`: не более двух попыток на отпечаток,
-кулдаун на отпечаток и на сервис после неудачи, часовой бюджет действий, предохранитель после серии
-неудач подряд и детектор осцилляции перекрёстных пар. Состояние гардов переживает перезапуск за счёт
-журнала append-only в формате JSON Lines вне рабочего дерева. Недоверенный текст, то есть логи и
-вывод команд, проходит через детерминированную защиту от инъекций в подсказку и подмены инструментов
-`injection.py` до и после обращения к модели. Каждое исполнение и каждое обращение к содержимому
-логов пишутся в неизменяемый журнал аудита `audit.py`.
+The command's class turns into an execution decision according to the autonomy level
+`AEGIL_AUTONOMY`. At the `observe` level (default) the agent only observes, diagnoses and proposes,
+but does not act. At the `safe_repair` level, reads and safe repairs are executed autonomously,
+while irreversible actions and protected patterns (`AEGIL_PROTECTED_PATTERNS`) require operator
+confirmation. At the `full` level everything is executed autonomously except irreversible actions
+and protected patterns, which always require confirmation, because that is the last line of defense
+of data against a model hallucination.
 
-## Автопилот и центр инцидентов
+On top of the gate the anti-looping guards `guards.py` operate: no more than two attempts per
+fingerprint, a cooldown per fingerprint and per service after a failure, an hourly action budget, a
+circuit breaker after a streak of consecutive failures, and a cross-pair oscillation detector. The
+guards' state survives a restart thanks to an append-only log in the JSON Lines format outside the
+working tree. Untrusted text, that is logs and command output, passes through the deterministic
+protection against prompt injection and tool substitution `injection.py` before and after the call
+to the model. Every execution and every access to the contents of logs is written to the immutable
+audit log `audit.py`.
 
-Фоновый цикл автопилота `autopilot.py` ведёт наблюдение, диагноз, действие и проверку результата без
-участия оператора. Факты об инфраструктуре собирает домен-агностичный каталог симптомов `alerts.py`:
-штормы рестартов пода, затянувшееся ожидание планирования (`Pending` или `Unschedulable`),
-заполнение файловой системы и давление памяти на узле, невозможность вытянуть образ
-(`ImagePullBackOff`, `ErrImagePull`), значимые события кластера (`FailedScheduling`, `FailedMount` и
-другие) и приближение срока действия сертификата TLS. Все пороги вынесены в переменные окружения с
-префиксом `AEGIL_` и имеют нейтральные значения по умолчанию, пригодные для произвольного кластера
-без предварительной калибровки.
+## The autopilot and the incident center
 
-Детерминированный ремонт `remediate.py` запускает безопасные починки по классу симптома, не полагаясь
-на обязательный вызов инструмента моделью. Инциденты хранятся в центре инцидентов `incidents.py` с
-явным жизненным циклом и дедупликацией по отпечатку, поэтому одинаковые симптомы группируются, а
-конкретные имена подов и числовые значения в отпечаток не входят. Исходы ремонтов `outcomes.py`
-замыкают контур активного обучения: результат каждого вмешательства становится размеченным примером
-для дообучения маршрутизатора запросов в сервисе разбора логов.
+The background autopilot loop `autopilot.py` conducts observation, diagnosis, action and
+verification of the result without operator involvement. Facts about the infrastructure are
+gathered by the domain-agnostic symptom catalog `alerts.py`: pod restart storms, prolonged waiting
+for scheduling (`Pending` or `Unschedulable`), filling of the file system and memory pressure on a
+node, the inability to pull an image (`ImagePullBackOff`, `ErrImagePull`), significant cluster
+events (`FailedScheduling`, `FailedMount` and others) and the approach of a TLS certificate's
+expiry. All thresholds are moved into environment variables with the `AEGIL_` prefix and have
+neutral default values, suitable for an arbitrary cluster without prior calibration.
 
-## Наблюдаемость инференса и SLO-гейт
+The deterministic repair `remediate.py` launches safe fixes by symptom class, without relying on a
+mandatory tool call by the model. Incidents are stored in the incident center `incidents.py` with
+an explicit lifecycle and deduplication by fingerprint, so identical symptoms are grouped, and
+specific pod names and numeric values are not part of the fingerprint. Repair outcomes `outcomes.py`
+close the active-learning loop: the result of each intervention becomes a labeled example for
+further training of the request router in the log-analysis service.
 
-Модуль `llm_metrics.py` собирает метрики обращений к языковой модели (задержки, токены, доля
-ошибок), а SLO-гейт `slo.py` увязывает право агента действовать автономно с выполнением целевых
-показателей: при нарушении бюджета ошибок автономия сама снижается к более осторожному поведению.
-Модуль самообновления `updater.py` применяет подтверждённое владельцем обновление образов через
-канал выпусков, причём применение обновления всегда требует явного подтверждения и автономно не
-выполняется.
+## Inference observability and the SLO gate
 
-## Инструменты через Model Context Protocol
+The `llm_metrics.py` module collects metrics of calls to the language model (latencies, tokens,
+error share), and the SLO gate `slo.py` ties the agent's right to act autonomously to the
+fulfillment of target indicators: on a violation of the error budget, autonomy itself lowers toward
+more cautious behavior. The self-update module `updater.py` applies an owner-confirmed image update
+through the release channel, and the application of an update always requires an explicit
+confirmation and is not executed autonomously.
 
-Панель выступает хостом Model Context Protocol (`mcp_tools.py`): инструменты подключённых открытых
-серверов добавляются к встроенным инструментам агента. Наиболее ценны читающие серверы
-наблюдаемости (Grafana, Prometheus, Loki, Tempo), расширяющие диагноз метриками, трассами и
-дашбордами. Поскольку структурированный вызов инструмента не классифицируется гейтом по аргументам,
-действует консервативное правило: сервер, явно помеченный оператором как `read_only`, исполняется
-свободно, а любой непомеченный сервер по умолчанию считается мутирующим и требует подтверждения
-оператора. Список серверов задаётся переменной `AEGIL_MCP_SERVERS`.
+## Tools through the Model Context Protocol
 
-Действия на самих узлах выполняет привилегированный узловой агент, доступный строго внутри кластера;
-клиент к нему закрыт токеном `AEGIL_NODEAGENT_TOKEN`. Клиент сервиса разбора логов вынесен в
-`rca_client.py`, клиент языковой модели в `llm.py`, клиент кластера в `k8s.py`.
+The panel acts as a host of the Model Context Protocol (`mcp_tools.py`): the tools of connected open
+servers are added to the agent's built-in tools. Most valuable are the read-only observability
+servers (Grafana, Prometheus, Loki, Tempo), which extend the diagnosis with metrics, traces and
+dashboards. Since a structured tool call is not classified by the gate by arguments, a conservative
+rule applies: a server explicitly marked by the operator as `read_only` is executed freely, while
+any unmarked server is by default treated as mutating and requires operator confirmation. The list
+of servers is set by the `AEGIL_MCP_SERVERS` variable.
 
-## Голосовой ввод
+Actions on the nodes themselves are performed by the privileged node agent, available strictly
+inside the cluster; the client to it is closed off by the token `AEGIL_NODEAGENT_TOKEN`. The client
+of the log-analysis service is separated into `rca_client.py`, the client of the language model
+into `llm.py`, the cluster client into `k8s.py`.
 
-Ввод запроса и озвучивание ответов на русском языке доступны через Web Speech API (кнопки микрофона
-и динамика в шапке PWA), с мягким отключением на браузерах без поддержки.
+## Voice input
 
-## Запуск (локально)
+Request input and the reading-aloud of responses are available through the Web Speech API (the
+microphone and speaker buttons in the PWA header), with a soft disable on browsers without support.
+
+## Running (locally)
 
 ```
 pip install -r requirements.txt
@@ -110,41 +116,42 @@ AEGIL_OPERATORS="max:$(openssl rand -hex 24)" AEGIL_RCA_URL=http://127.0.0.1:910
   uvicorn app:app --host 127.0.0.1 --port 9109
 ```
 
-Откройте `http://127.0.0.1:9109` (или адрес туннеля), введите токен оператора и наберите `/help`.
-Для агентного цикла задайте доступ к языковой модели: `AEGIL_LLM_PROVIDER` (`anthropic` по
-умолчанию или openai-совместимый), `AEGIL_LLM_MODEL`, `AEGIL_LLM_API_KEY` и, при своей модели в
-кластере, `AEGIL_LLM_BASE_URL`.
+Open `http://127.0.0.1:9109` (or the tunnel address), enter an operator token and type `/help`. For
+the agentic loop, set access to the language model: `AEGIL_LLM_PROVIDER` (`anthropic` by default or
+an openai-compatible one), `AEGIL_LLM_MODEL`, `AEGIL_LLM_API_KEY` and, for your own model in the
+cluster, `AEGIL_LLM_BASE_URL`.
 
-## Развёртывание в кластер
+## Deployment to a cluster
 
-Панель ставится Helm-чартом `deploy/helm/aegil` (шаблон `40-agent-panel`) или сырым манифестом
-`deploy/k8s`. Секреты панели (`AEGIL_OPERATORS` и общий с узловым агентом `AEGIL_NODEAGENT_TOKEN`)
-кладутся в секрет `aegil-secrets`. Наружу сервис не публикуется; доступ через
-`kubectl -n aegil port-forward svc/agent-panel 9109:9109` поверх туннеля.
+The panel is installed with the Helm chart `deploy/helm/aegil` (the `40-agent-panel` template) or
+the raw manifest `deploy/k8s`. The panel secrets (`AEGIL_OPERATORS` and the `AEGIL_NODEAGENT_TOKEN`
+shared with the node agent) are placed in the `aegil-secrets` secret. The service is not published
+externally; access is through `kubectl -n aegil port-forward svc/agent-panel 9109:9109` over a
+tunnel.
 
-## Тесты
+## Tests
 
-Все компоненты покрыты модульными тестами без сети и без внешних зависимостей:
+All components are covered by unit tests that need no network and no external dependencies:
 
 ```
 cd services/agent-panel
 for t in test_*.py; do python3 "$t"; done
 ```
 
-Покрыты агентный цикл и путь подтверждения, детерминированный классификатор политики и его
-устойчивость к обходам, все гарды с персистентностью состояния, каталог симптомов на подставных
-данных, дедупликация инцидентов по отпечатку, запись аудита, защита от инъекций, детерминированный
-ремонт, исходы и активное обучение, метрики инференса и SLO-гейт, хост Model Context Protocol,
-клиент узлового агента и самообновление.
+Covered are the agentic loop and the confirmation path, the deterministic policy classifier and its
+resistance to bypasses, all guards with state persistence, the symptom catalog on mock data,
+incident deduplication by fingerprint, audit recording, injection protection, deterministic repair,
+outcomes and active learning, inference metrics and the SLO gate, the Model Context Protocol host,
+the node-agent client and self-updating.
 
-## Переменные окружения
+## Environment variables
 
-Полный список конфигурации продукта с единым префиксом `AEGIL_` описан в корневом `.env.example` и в
-`docs/CONVENTIONS.md`. Ключевые для панели: `AEGIL_OPERATORS` (аллоу-лист операторов, единственный
-вход, обязателен), `AEGIL_AUTONOMY` (уровень автономии), `AEGIL_RESTART_ALLOWLIST` и
-`AEGIL_RESTART_DENYLIST` (списки перезапускаемых и запрещённых к перезапуску сервисов),
-`AEGIL_PROTECTED_PATTERNS` (защищаемые ресурсы, всегда под подтверждением), `AEGIL_RCA_URL`,
-`AEGIL_LLM_PROVIDER`, `AEGIL_LLM_MODEL`, `AEGIL_LLM_API_KEY`, `AEGIL_LLM_BASE_URL`,
-`AEGIL_NODEAGENT_TOKEN`, `AEGIL_MCP_SERVERS`, пороги каталога симптомов (`AEGIL_RESTART_STORM_THRESHOLD`,
-`AEGIL_PENDING_AGE_SECONDS`, `AEGIL_DISK_WARN`, `AEGIL_DISK_CRIT`, `AEGIL_MEM_WARN`,
-`AEGIL_TLS_WARN_DAYS`, `AEGIL_TLS_HIGH_DAYS`).
+The full list of product configuration with the single `AEGIL_` prefix is described in the root
+`.env.example` and in `docs/CONVENTIONS.md`. The key ones for the panel: `AEGIL_OPERATORS` (the
+operator allowlist, the sole entry point, mandatory), `AEGIL_AUTONOMY` (the autonomy level),
+`AEGIL_RESTART_ALLOWLIST` and `AEGIL_RESTART_DENYLIST` (the lists of services that may and may not
+be restarted), `AEGIL_PROTECTED_PATTERNS` (protected resources, always behind confirmation),
+`AEGIL_RCA_URL`, `AEGIL_LLM_PROVIDER`, `AEGIL_LLM_MODEL`, `AEGIL_LLM_API_KEY`, `AEGIL_LLM_BASE_URL`,
+`AEGIL_NODEAGENT_TOKEN`, `AEGIL_MCP_SERVERS`, the symptom-catalog thresholds
+(`AEGIL_RESTART_STORM_THRESHOLD`, `AEGIL_PENDING_AGE_SECONDS`, `AEGIL_DISK_WARN`, `AEGIL_DISK_CRIT`,
+`AEGIL_MEM_WARN`, `AEGIL_TLS_WARN_DAYS`, `AEGIL_TLS_HIGH_DAYS`).

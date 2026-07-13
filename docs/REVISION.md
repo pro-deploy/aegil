@@ -1,146 +1,150 @@
-# Ревизия качества версии 0.1.0 и план переписывания (исторический документ)
+# Quality revision of version 0.1.0 and the rewrite plan (historical document)
 
-> **Статус: исторический документ, план выполнен.** Это отчёт сплошного аудита кодовой базы
-> версии 0.1.0 и принятый по его итогам план переписывания, составленные ПЕРЕД работами. Все
-> дефекты и всё наследие исходной аудиоплатформы (KROKKI, adminchat, gooseek, asr, diarize,
-> тенанты, биллинг, YooKassa), описанные ниже в настоящем времени, относятся к состоянию ДО
-> переписывания и на текущий момент УСТРАНЕНЫ: продукт переписан и переименован в Aegil,
-> наследие вычищено, конфигурация вынесена под единый префикс `AEGIL_`, детерминированный гейт
-> опасности и гарды усилены, узловой агент закрыт, разбор логов и метрик универсален. Настоящие
-> времена в тексте ниже следует читать как «на момент аудита версии 0.1.0», а не как факты о
-> текущем продукте. Документ сохранён как запись аудита и обоснование принятой архитектуры, брать
-> из него описания как актуальные НЕ следует.
+> **English** | [Русский](REVISION.ru.md)
 
-Настоящий документ сводит результат сплошного аудита кодовой базы версии 0.1.0,
-проведённого перед полным переписыванием продукта. Аудит выполнен пятью независимыми
-проходами по зонам (ядро безопасности панели, веб- и прикладной слой панели, сервис
-разбора первопричин RCA, привилегированный узловой агент node-agent, инфраструктура и
-развёртывание) и подкреплён детерминированным сканером качества ailc. Каждый файл прочитан
-целиком, векторы обхода классификатора команд проверены мысленным прогоном кода.
+> **Status: historical document, the plan has been carried out.** This is a report of a full audit
+> of the version 0.1.0 codebase and the rewrite plan adopted on its basis, both drawn up BEFORE
+> the work. All defects and all the legacy of the original audio platform (KROKKI, adminchat,
+> gooseek, asr, diarize, tenants, billing, YooKassa) described below in the present tense refer to
+> the state BEFORE the rewrite and are, as of now, RESOLVED: the product has been rewritten and
+> renamed to Aegil, the legacy has been cleaned out, the configuration has been moved under the
+> single `AEGIL_` prefix, the deterministic danger gate and the guards have been reinforced, the
+> node agent has been closed off, and log and metric analysis has been made universal. The present
+> tenses in the text below should be read as "as of the audit of version 0.1.0", not as facts
+> about the current product. The document is preserved as an audit record and a justification of
+> the adopted architecture; its descriptions should NOT be taken as current.
 
-## Сквозной вывод
+This document summarizes the result of a full audit of the version 0.1.0 codebase, conducted
+before the complete rewrite of the product. The audit was performed as five independent passes by
+zone (the panel's security core, the panel's web and application layer, the root-cause-analysis
+service RCA, the privileged node agent node-agent, and infrastructure and deployment) and was
+backed by the deterministic quality scanner ailc. Every file was read in full, and the
+command-classifier bypass vectors were checked by mentally tracing the code.
 
-Продукт в текущем виде непригоден к выпуску по двум независимым причинам. Во-первых, он не
-запускается в чужом кластере вообще, ещё до вопросов качества: манифесты ссылаются на не
-создаваемые продуктом секреты и конфигурационные карты, прибиты к меткам узлов исходного
-двухузлового кластера, закреплены за наследными тегами образов, а сервис разбора логов по
-умолчанию анализирует пространство имён исходной платформы. Во-вторых, там, где он
-запустился бы, его главная защитная функция, то есть детерминированный классификатор
-опасности команд, дырява в самой основе, а привилегированный узловой агент опубликован в
-локальную сеть незашифрованным рут-бэкдором. Детерминированный сканер ailc независимо от
-человеческого суждения вынес оценку ноль из ста при тридцати одном блокирующем решении.
+## Overall conclusion
 
-Отдельно установлен системный факт: заявление конфигурационного модуля о доменной
-нейтральности опровергается системными промптами модели, каталогом детекторов, синонимами
-имён узлов, прикладным адаптером, всем пользовательским интерфейсом и документацией. Наследие
-исходной платформы (имена KROKKI, gooseek, adminchat, сервисы asr и diarize, биллинг,
-тенанты) пронизывает код, манифесты и документы, а архитектурные решения и спецификации
-целиком описывают аудиоплатформу без единой пометки об историчности.
+The product in its current form is unfit for release for two independent reasons. First, it does
+not run in someone else's cluster at all, even before questions of quality: the manifests
+reference secrets and config maps the product does not create, are pinned to the node labels of the
+original two-node cluster, are fixed to legacy image tags, and the log-analysis service by default
+analyzes the namespace of the original platform. Second, where it would run, its main protective
+function, that is the deterministic command-danger classifier, is flawed at its very foundation,
+and the privileged node agent is published onto the local network as an unencrypted root backdoor.
+The deterministic scanner ailc, independently of human judgment, gave a score of zero out of a
+hundred with thirty-one blocking decisions.
 
-## Реестр критических дефектов
+Separately, a systemic fact was established: the configuration module's claim of domain neutrality
+is refuted by the model's system prompts, the detector catalog, the node-name synonyms, the
+application adapter, the entire user interface and the documentation. The legacy of the original
+platform (the names KROKKI, gooseek, adminchat, the asr and diarize services, billing, tenants)
+pervades the code, the manifests and the documents, and the architectural decisions and
+specifications describe the audio platform in full without a single mark of historicity.
 
-### Безопасность исполнения команд
+## Registry of critical defects
 
-Классификатор политики построен на неверной модели «решает только первый элемент argv».
-В список «только чтение» занесены универсальные запускатели процессов, поэтому команды вида
-`env rm -rf /var/lib/postgresql/data` и `find /var/lib/postgresql -delete` классифицируются
-как безобидное чтение и исполняются немедленно, без гардов, без подтверждения и без записи в
-аудит. Сопоставление путей идёт по сырым префиксам строк без нормализации, поэтому траверсал
-`/tmp/../var/lib/postgresql/data` проходит как чистка кеша. Риск SQL оценивается только по
-тексту в argv, поэтому `psql -f wipe.sql` с оператором DROP внутри файла проходит как чтение.
-Путь чтения в агентном цикле вообще не атомарен с гардами (гонка проверки и фиксации попытки),
-не считается в бюджет и не аудируется, а отложенные подтверждения хранятся в памяти процесса
-без привязки к инициатору и теряются при нескольких воркерах. Журнал аудита физически лежит
-внутри рабочего дерева и сам классифицируется как безопасно удаляемый, то есть агент способен
-стереть собственные следы.
+### Command-execution security
 
-### Привилегированный узловой агент
+The policy classifier is built on the incorrect model "only the first element of argv decides." The
+"read-only" list includes universal process launchers, so commands of the form
+`env rm -rf /var/lib/postgresql/data` and `find /var/lib/postgresql -delete` are classified as
+harmless reads and executed immediately, without guards, without confirmation and without a record
+in the audit. Path matching is done by raw string prefixes without normalization, so the traversal
+`/tmp/../var/lib/postgresql/data` passes as a cache cleanup. SQL risk is assessed only by the text
+in argv, so `psql -f wipe.sql` with a DROP operator inside the file passes as a read. The read path
+in the agentic loop is not atomic with the guards at all (a race between the check and the
+recording of the attempt), is not counted against the budget and is not audited, and deferred
+confirmations are held in the process's memory without a binding to the initiator and are lost with
+multiple workers. The audit log physically lies inside the working tree and is itself classified as
+safe to delete, meaning the agent is capable of erasing its own traces.
 
-Сам код исполнения написан аккуратно (сверка токена за постоянное время, честная защита от
-инъекции через список аргументов и разделитель опций nsenter), но модель доступа критически
-дырява. Манифест публикует привилегированный god-mode-эндпоинт через hostPort на всех сетевых
-интерфейсах каждого узла, включая локальную сеть и управляющий узел, что прямо противоречит
-обещанию внутрикластерной доступности. Сетевых политик нет вовсе, шифрования транспорта нет,
-токен один на всё и статический, ходит открытым текстом и снифается в локальной сети.
-Неаутентифицированный медленный поток соединений кладёт под из-за отсутствия таймаута сокета
-и неограниченного пула потоков. Полный список аргументов команды пишется в лог и утекает в
-хранилище логов вместе с паролями и токенами, которые эксплуатация нередко передаёт
-аргументами.
+### The privileged node agent
 
-### Автономный цикл автопилота
+The execution code itself is written carefully (constant-time token comparison, honest protection
+against injection through the argument list and the nsenter option separator), but the access model
+is critically flawed. The manifest publishes a privileged god-mode endpoint through hostPort on all
+network interfaces of every node, including the local network and the control node, which directly
+contradicts the promise of in-cluster availability. There are no network policies at all, there is
+no transport encryption, the token is a single static one for everything, travels in plaintext and
+is sniffed on the local network. An unauthenticated slow stream of connections brings the pod down
+because of the absence of a socket timeout and an unbounded thread pool. The full list of the
+command's arguments is written to the log and leaks into the log store together with the passwords
+and tokens that exploitation not infrequently passes as arguments.
 
-При недоступности источников наблюдения пустые факты трактуются как отсутствие проблем, и все
-ожидающие проверки помечаются как успешно решённые агентом: слепота системы засчитывается за
-ремонт. Одно исключение сети в момент рестарта навсегда замораживает инцидент в состоянии
-ремонта без эскалации и без следа. Карточка подтверждения в интерфейсе читает несуществующие
-поля ответа сервера, поэтому оператор видит пустую карточку без текста операции, контрольное
-слово не запрашивается никогда, а кнопка подтверждения активна сразу: необратимая команда
-подтверждается одним кликом вслепую.
+### The autopilot's autonomous loop
 
-### Разбор первопричин
+When observation sources are unavailable, empty facts are treated as the absence of problems, and
+all pending checks are marked as successfully resolved by the agent: the system's blindness is
+counted as a repair. A single network exception at the moment of a restart freezes the incident
+forever in the repairing state without escalation and without a trace. The confirmation card in the
+interface reads non-existent fields of the server's response, so the operator sees an empty card
+with no operation text, the control word is never requested, and the confirm button is active
+immediately: an irreversible command is confirmed with a single blind click.
 
-Чтение логов считает записью только внутренний JSON-конверт исходной платформы, поэтому
-обычные текстовые логи подов Kubernetes (стектрейсы, panic, сообщения OOM-killer) невидимы
-для всех детекторов, и на чужом кластере движок слеп по главной функции. Скоринг устроен так,
-что реальный всплеск ошибок при одной сработавшей группе даёт уверенность ниже порога и
-объявляется здоровьем, тогда как коррелированные детекторы от одной волны ошибок
-перемножаются как независимые свидетельства и выводят уверенность в девяносто восемь
-процентов из двух строк лога. Веса объявлены калибруемыми, но калибровки и данных для неё не
-существует. Модуль анализа застрявших заданий целиком является наследием аудиоконвейера и
-подлежит удалению. Тесты написаны так, что стандартный сборщик найдёт ноль тестов при зелёном
-CI.
+### Root-cause analysis
 
-### Развёртывание в чужом кластере
+The reading of logs counts as a record only the internal JSON envelope of the original platform, so
+ordinary text logs of Kubernetes pods (stack traces, panics, OOM-killer messages) are invisible to
+all detectors, and in someone else's cluster the engine is blind on its main function. Scoring is
+arranged so that a real spike of errors with a single triggered group yields a confidence below the
+threshold and is declared health, whereas detectors correlated from a single wave of errors are
+multiplied as independent evidence and produce a confidence of ninety-eight percent from two log
+lines. The weights are declared calibratable, but neither the calibration nor the data for it
+exists. The stuck-job analysis module is entirely a legacy of the audio pipeline and is subject to
+removal. The tests are written so that the standard collector finds zero tests with a green CI.
 
-Поды разбора логов и тренера ссылаются на не создаваемые продуктом конфигурационную карту и
-секрет и падают при старте. Имена и ключи секретов в инструкции и в манифесте панели
-расходятся, дословное выполнение инструкции даёт неподнимающийся под. Семь рабочих нагрузок
-прибиты к метке узла исходного кластера и остаются в вечном ожидании, тренер вдобавок прибит к
-несуществующему узлу с чужим ограничением планирования. Скрипт сборки собирает всё под одной
-версией, а манифесты закреплены за четырьмя разными наследными тегами, поэтому собранные
-образы не подтягиваются. Обязательные Postgres и объектное хранилище в документации не
-упомянуты. Сетевых политик нет ни одной, сбор логов идёт без фильтра по пространству имён и
-забирает логи всех пространств чужого кластера.
+### Deployment in someone else's cluster
 
-## Повердиктная карта файлов
+The log-analysis and trainer pods reference a config map and a secret the product does not create
+and crash at startup. The names and keys of the secrets in the instructions and in the panel
+manifest diverge, and literal execution of the instructions yields a pod that does not come up.
+Seven workloads are pinned to the node label of the original cluster and remain in eternal pending,
+and the trainer is additionally pinned to a non-existent node with a foreign scheduling constraint.
+The build script assembles everything under a single version, while the manifests are fixed to four
+different legacy tags, so the built images are not pulled. The mandatory Postgres and object storage
+are not mentioned in the documentation. There is not a single network policy, log collection runs
+without a namespace filter and takes the logs of all namespaces of someone else's cluster.
 
-Переписать с нуля требуется: классификатор политики и агентный исполнитель панели (неверная
-основа классификации и исполнения привилегированных команд), автопилот (слепота как успех,
-заморозка при исключении, привязка к чужому домену), каталоги детекторов алертов и статусные
-сводки панели (моделируют конкретную аудиоплатформу, а не универсальные симптомы Kubernetes),
-пользовательский интерфейс (сломанный контракт подтверждения, сплошной чужой брендинг),
-чтение логов и каталог детекторов RCA со скорингом (откалиброваны под чужой логирующий канон),
-README и модель доступа узлового агента вместе с его манифестом. Удалить целиком: модуль
-анализа застрявших заданий как чужеродный орган.
+## Per-verdict map of files
 
-Сохранить и укрепить точечными правками: слой доступа к API Kubernetes, модель жизненного
-цикла инцидентов, каркас маршрутов панели, гарды против зацикливания, примитив аудита,
-агрегатор фактов и модуль вердикта RCA, нормализацию, каскад маршрутизации, кеш, узловой агент
-на уровне кода исполнения. Эти модули спроектированы разумнее, чем можно было ожидать, и
-переписывания не требуют.
+To be rewritten from scratch: the policy classifier and the agentic executor of the panel (an
+incorrect foundation for the classification and execution of privileged commands), the autopilot
+(blindness as success, freeze on exception, binding to someone else's domain), the alert-detector
+catalogs and the panel's status summaries (they model a specific audio platform rather than the
+universal symptoms of Kubernetes), the user interface (a broken confirmation contract, pervasive
+foreign branding), the log reading and the RCA detector catalog with scoring (calibrated to
+someone else's logging canon), and the README and access model of the node agent together with its
+manifest. To be removed entirely: the stuck-job analysis module as an alien organ.
 
-## Принятая архитектура переписывания
+To be preserved and reinforced with targeted edits: the Kubernetes API access layer, the incident
+lifecycle model, the panel's route skeleton, the anti-looping guards, the audit primitive, the RCA
+fact aggregator and verdict module, the normalization, the routing cascade, the cache, and the node
+agent at the level of the execution code. These modules are designed more sensibly than one might
+have expected and do not require a rewrite.
 
-Под мандатом полного карт-бланша приняты следующие направляющие решения. Слой языковой модели
-делается универсальным с поддержкой полноценного протокола вызова инструментов (Anthropic и
-OpenAI-совместимый API), по умолчанию облачная фронтир-модель ради качества агентного
-поведения, с возможностью владельцу указать свою модель в кластере. Инструментарий переводится
-на открытую экосистему Model Context Protocol: панель становится хостом, инструменты
-подключаются готовыми открытыми серверами (Kubernetes, Grafana, Loki и прочие), а узловой
-агент и сервис RCA оборачиваются собственными инструментами того же протокола. Детерминированный
-гейт опасности сохраняется и превращается в настраиваемый уровень автономии, потому что именно
-он отличает продукт от произвольного агента в кластере и остаётся единственной защитой от
-разрушения данных по галлюцинации модели. Коробочность достигается через Helm-чарт, мастер
-первичной настройки в интерфейсе и хранение конфигурации в кластере с горячей перезагрузкой.
+## The adopted rewrite architecture
 
-## Порядок работ
+Under the mandate of a full carte blanche, the following guiding decisions were adopted. The
+language-model layer is made universal with support for a full tool-call protocol (Anthropic and
+the OpenAI-compatible API), with a cloud frontier model as the default for the sake of the quality
+of agentic behavior, with the ability for the owner to specify their own model in the cluster. The
+tooling is moved to the open Model Context Protocol ecosystem: the panel becomes a host, tools are
+connected as ready-made open servers (Kubernetes, Grafana, Loki and others), and the node agent and
+the RCA service are wrapped as their own tools of the same protocol. The deterministic danger gate
+is preserved and turned into a configurable autonomy level, because it is precisely what
+distinguishes the product from an arbitrary agent in the cluster and remains the only defense
+against the destruction of data by a model hallucination. Turnkey operation is achieved through a
+Helm chart, a first-run setup wizard in the interface, and storage of configuration in the cluster
+with hot reload.
 
-Первым идёт очистка идентичности продукта и вынос всей конфигурации в единый параметризуемый
-контур, потому что без чистой основы любое переписывание потащит наследие дальше. Затем
-переписывается ядро безопасности (классификатор и исполнитель) под новую модель вызова
-инструментов с сохранением и усилением гардов и аудита. Далее укрепляется узловой агент и его
-модель доступа, вводятся сетевые политики и шифрование транспорта. Затем переписывается разбор
-логов под универсальный приём произвольных логов Kubernetes и корректный скоринг. После этого
-собирается коробка (Helm-чарт, мастер настройки, горячая конфигурация) и замыкается контур
-самообучения и самообновления. Каждый узел работ сопровождается переписанными тестами,
-проверяющими правильность поведения, а не закрепляющими текущее.
+## The order of work
+
+First comes the cleanup of the product's identity and the extraction of all configuration into a
+single parameterizable contour, because without a clean foundation any rewrite would drag the
+legacy further. Then the security core (the classifier and the executor) is rewritten for the new
+tool-call model with the preservation and reinforcement of the guards and the audit. Next the node
+agent and its access model are reinforced, and network policies and transport encryption are
+introduced. Then the log analysis is rewritten for the universal intake of arbitrary Kubernetes
+logs and correct scoring. After that the turnkey package is assembled (the Helm chart, the setup
+wizard, the hot configuration) and the loop of self-learning and self-updating is closed. Each unit
+of work is accompanied by rewritten tests that verify correct behavior rather than lock in the
+current one.

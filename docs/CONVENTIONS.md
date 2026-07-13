@@ -1,90 +1,93 @@
-# Соглашения продукта aegil
+# aegil product conventions
 
-Единый контракт, обязательный для всего кода, манифестов и документации. Введён при переписывании
-из наследной панели администратора в универсальный автономный SRE-агент для произвольного
-кластера Kubernetes и произвольного приложения. Любой модуль и любой агент, работающий над
-кодовой базой, обязан следовать этим соглашениям, чтобы результат оставался связным.
+> **English** | [Русский](CONVENTIONS.ru.md)
 
-## Идентичность
+A single contract, mandatory for all code, manifests and documentation. It was introduced during
+the rewrite from the legacy administrator panel into a universal autonomous SRE agent for an
+arbitrary Kubernetes cluster and an arbitrary application. Every module and every agent working on
+the codebase is obliged to follow these conventions so that the result stays coherent.
 
-Продукт называется aegil. Никаких упоминаний исходной платформы (KROKKI, adminchat,
-gooseek, сервисы asr, diarize, worker, тенанты, биллинг, YooKassa, stalwart, домены krokki.ru)
-не должно остаться нигде: ни в коде, ни в промптах модели, ни в манифестах, ни в интерфейсе, ни
-в документации, ни в именах переменных окружения, ни в комментариях. Продукт домен-агностичен:
-он не знает заранее ни имён сервисов заказчика, ни топологии его кластера, а выясняет их через
-API Kubernetes и через конфигурацию, заданную владельцем при установке.
+## Identity
 
-## Переменные окружения
+The product is called aegil. No mentions of the original platform (KROKKI, adminchat, gooseek, the
+asr, diarize, worker services, tenants, billing, YooKassa, stalwart, the krokki.ru domains) must
+remain anywhere: not in code, not in the model's prompts, not in manifests, not in the interface,
+not in documentation, not in environment-variable names, and not in comments. The product is
+domain-agnostic: it does not know the customer's service names or cluster topology in advance, but
+discovers them through the Kubernetes API and through the configuration set by the owner at
+installation time.
 
-Единый префикс `AEGIL_` для всей конфигурации продукта. Наследные имена (ADMINCHAT_*,
-PANEL_*, а также беспрефиксные NAMESPACE, RCA_URL, LLM_SERVICE_URL, KROKKI_*) упраздняются
-полностью, обратная совместимость с ними не поддерживается. Канонический контур:
+## Environment variables
 
-Панель агента. `AEGIL_OPERATORS` (список «оператор:токен» через запятую, единственный вход,
-fail-closed), `AEGIL_NAMESPACE` (наблюдаемое и управляемое пространство имён, по умолчанию
-значение из downward API либо `default`), `AEGIL_NODE_ROLE_LABEL` (метка роли узла для
-дружеских имён, по умолчанию `node-role.kubernetes.io/role`), `AEGIL_AUTONOMY` (уровень
-автономии, см. ниже), `AEGIL_RESTART_ALLOWLIST` и `AEGIL_RESTART_DENYLIST` (списки сервисов),
-`AEGIL_PROTECTED_PATTERNS` (ресурсы и пути, действия над которыми всегда требуют подтверждения,
-задаётся владельцем, по умолчанию пусто), `AEGIL_RCA_URL`, `AEGIL_NODEAGENT_TOKEN`,
-`AEGIL_NODEAGENT_TIMEOUT`.
+A single `AEGIL_` prefix for all product configuration. Legacy names (ADMINCHAT_*, PANEL_*, as
+well as the prefixless NAMESPACE, RCA_URL, LLM_SERVICE_URL, KROKKI_*) are abolished entirely, and
+backward compatibility with them is not maintained. The canonical set:
 
-Языковая модель. `AEGIL_LLM_PROVIDER` (`anthropic` или `openai`, по умолчанию `anthropic`),
-`AEGIL_LLM_MODEL` (идентификатор модели), `AEGIL_LLM_API_KEY`, `AEGIL_LLM_BASE_URL`
-(необязательный, для своей модели в кластере через vLLM, Ollama или совместимый прокси).
+The agent panel. `AEGIL_OPERATORS` (a comma-separated list of "operator:token", the sole entry
+point, fail-closed), `AEGIL_NAMESPACE` (the observed and managed namespace, defaulting to the
+value from the downward API or `default`), `AEGIL_NODE_ROLE_LABEL` (the node-role label for
+friendly names, defaulting to `node-role.kubernetes.io/role`), `AEGIL_AUTONOMY` (the autonomy
+level, see below), `AEGIL_RESTART_ALLOWLIST` and `AEGIL_RESTART_DENYLIST` (service lists),
+`AEGIL_PROTECTED_PATTERNS` (resources and paths whose actions always require confirmation, set by
+the owner, empty by default), `AEGIL_RCA_URL`, `AEGIL_NODEAGENT_TOKEN`, `AEGIL_NODEAGENT_TIMEOUT`.
 
-Наблюдаемость. `AEGIL_LOKI_URL`, `AEGIL_LOKI_QUERY` (селектор потоков, по умолчанию
-`{namespace="$AEGIL_NAMESPACE"}` без зашитого имени), `AEGIL_GRAFANA_URL`,
+The language model. `AEGIL_LLM_PROVIDER` (`anthropic` or `openai`, default `anthropic`),
+`AEGIL_LLM_MODEL` (the model identifier), `AEGIL_LLM_API_KEY`, `AEGIL_LLM_BASE_URL` (optional, for
+your own model in the cluster via vLLM, Ollama or a compatible proxy).
+
+Observability. `AEGIL_LOKI_URL`, `AEGIL_LOKI_QUERY` (the stream selector, defaulting to
+`{namespace="$AEGIL_NAMESPACE"}` without a hardcoded name), `AEGIL_GRAFANA_URL`,
 `AEGIL_GRAFANA_TOKEN`.
 
-Сервис разбора логов и тренер. `AEGIL_LOKI_URL`, `AEGIL_POSTGRES_DSN`, `AEGIL_S3_ENDPOINT`,
-`AEGIL_S3_ACCESS_KEY`, `AEGIL_S3_SECRET_KEY`, `AEGIL_S3_BUCKET`, `AEGIL_MODEL_KEY_PREFIX`.
+The log-analysis service and the trainer. `AEGIL_LOKI_URL`, `AEGIL_POSTGRES_DSN`,
+`AEGIL_S3_ENDPOINT`, `AEGIL_S3_ACCESS_KEY`, `AEGIL_S3_SECRET_KEY`, `AEGIL_S3_BUCKET`,
+`AEGIL_MODEL_KEY_PREFIX`.
 
-Узловой агент. `AEGIL_NODEAGENT_TOKEN`, `AEGIL_NODE_NAME` (из downward API `spec.nodeName`),
+The node agent. `AEGIL_NODEAGENT_TOKEN`, `AEGIL_NODE_NAME` (from the downward API `spec.nodeName`),
 `AEGIL_NODEAGENT_PORT`.
 
-## Уровни автономии
+## Autonomy levels
 
-Прежний булев флаг автономного ремонта заменяется тремя явными уровнями в переменной
-`AEGIL_AUTONOMY`, выбираемыми владельцем из интерфейса. Уровень `observe` (по умолчанию) это
-сухой прогон: агент наблюдает, ставит диагноз и предлагает, но не действует. Уровень
-`safe_repair` разрешает автономное исполнение команд класса read и safe_write, тогда как
-destructive и всё, что попадает под `AEGIL_PROTECTED_PATTERNS`, требует подтверждения
-оператора. Уровень `full` даёт полную автономию: автономно исполняется всё, кроме класса
-destructive и защищённых шаблонов, которые остаются за подтверждением всегда, потому что это
-единственная защита данных от галлюцинации модели. Решение об уровне класса принимает
-детерминированный классификатор вне модели, поэтому модель не может повысить себе полномочия.
+The former boolean autonomous-repair flag is replaced by three explicit levels in the
+`AEGIL_AUTONOMY` variable, chosen by the owner from the interface. The `observe` level (default) is
+a dry run: the agent observes, diagnoses and proposes, but does not act. The `safe_repair` level
+permits autonomous execution of commands in the read and safe_write classes, whereas destructive
+and anything falling under `AEGIL_PROTECTED_PATTERNS` requires operator confirmation. The `full`
+level grants full autonomy: everything is executed autonomously except the destructive class and
+the protected patterns, which always remain behind confirmation, because that is the only defense
+of data against a model hallucination. The decision about a command's class is made by the
+deterministic classifier outside the model, so the model cannot raise its own privileges.
 
-## Классы опасности команд
+## Command danger classes
 
-Классификатор относит предлагаемое действие к одному из трёх универсальных классов: `read`
-(только чтение, автономно всегда), `safe_write` (обратимый ремонт: перезапуск сервиса из
-allowlist, удаление пода, масштабирование, чистка кеша и временных путей, освобождение места),
-`destructive` (необратимое: удаление данных, томов, пространств имён, деплойментов, наборов,
-DROP или TRUNCATE таблиц, mkfs, dd на устройство, удаление одиночных критичных файлов).
-Наследный класс finance упраздняется как доменно-специфичный; его роль (всегда подтверждать
-чувствительное) берёт на себя настраиваемый механизм `AEGIL_PROTECTED_PATTERNS`, куда
-владелец вносит свои защищаемые ресурсы. Дисциплина неизменна: неизвестная мутирующая команда
-трактуется как destructive, классификатор всегда ошибается в сторону подтверждения.
+The classifier assigns a proposed action to one of three universal classes: `read` (read-only,
+always autonomous), `safe_write` (reversible repair: restarting a service from the allowlist,
+deleting a pod, scaling, clearing caches and temporary paths, freeing space), `destructive`
+(irreversible: deleting data, volumes, namespaces, deployments, sets, DROP or TRUNCATE of tables,
+mkfs, dd to a device, deletion of individual critical files). The legacy finance class is
+abolished as domain-specific; its role (always confirm the sensitive) is taken over by the
+configurable `AEGIL_PROTECTED_PATTERNS` mechanism into which the owner enters their protected
+resources. The discipline is unchanged: an unknown mutating command is treated as destructive, and
+the classifier always errs on the side of confirmation.
 
-## Топология кластера
+## Cluster topology
 
-Никаких зашитых имён узлов, сервисов или синонимов. Агент выясняет топологию через API
-Kubernetes: узлы перечисляет запросом к кластеру, дружеские имена берёт из метки
-`AEGIL_NODE_ROLE_LABEL`, если она проставлена, а иначе оперирует именами узлов как есть.
-Системный промпт модели не содержит конкретной топологии, а получает актуальный снимок кластера
-как факт на входе шага.
+No hardcoded node, service or synonym names. The agent discovers topology through the Kubernetes
+API: it enumerates nodes with a query to the cluster, takes friendly names from the
+`AEGIL_NODE_ROLE_LABEL` label if it is set, and otherwise operates on node names as they are. The
+model's system prompt contains no specific topology, but receives a current snapshot of the
+cluster as a fact on the step's input.
 
-## Тесты
+## Tests
 
-Тесты пишутся под проверку правильности поведения, а не под закрепление текущего. Формат
-собираемый стандартным сборщиком (функции с префиксом `test_`), чтобы CI не был зелёным при
-нулевом сборе. Обязательны негативные проверки: реальные векторы обхода классификатора,
-поведение при недоступности источников, конкурентный доступ, порядок аутентификации до чтения
-тела запроса.
+Tests are written to verify correct behavior, not to lock in the current behavior. The format is
+one a standard collector can gather (functions with the `test_` prefix), so that CI is not green
+on a zero collection. Negative checks are mandatory: real classifier-bypass vectors, behavior when
+sources are unavailable, concurrent access, and the ordering of authentication before reading the
+request body.
 
-## Версионирование
+## Versioning
 
-Единая семантическая версия продукта на все образы разом, каждый деплой под новым тегом, тег
-фиксируется в git. Никакой перезаписи выпущенного тега на месте. Версии в чарте, манифестах и
-реестре держатся в согласии.
+A single semantic version of the product for all images at once, each deployment under a new tag,
+the tag recorded in git. No overwriting of a released tag in place. Versions in the chart, the
+manifests and the registry are kept in agreement.

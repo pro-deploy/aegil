@@ -1,80 +1,88 @@
 # Aegil
 
-Автономный SRE и девопс-агент для Kubernetes с детерминированным разбором логов. Продукт
-подключается к любому кластеру и к системам логирования и мониторинга, сам наблюдает состояние,
-ставит диагноз по фактам и устраняет инфраструктурные проблемы, а оператор общается с ним
-обычным чатом на естественном языке. Языковая модель управляет через реальные инструменты
-(команды кластера и команды на узлах), но действует в детерминированных рамках: классификация
-опасности команд, гарды против зацикливания, подтверждение необратимого, полный аудит.
+> **English** | [Русский](README.ru.md)
 
-Продукт выделен как самостоятельный из платформы обработки аудио, где он вырос (решения ADR-0032
-логирование и RCA, ADR-0033 панель, ADR-0037/0038 автономный агент, ADR-0041 исполнитель команд и
-node-agent, см. docs/adr). Граница выделения описана в docs/BOUNDARY.md.
+An autonomous Site Reliability Engineering (SRE) and DevOps agent for Kubernetes with
+deterministic log analysis. The product connects to any cluster and to logging and monitoring
+systems, observes state on its own, diagnoses problems from facts and remediates infrastructure
+issues, while the operator talks to it through an ordinary natural-language chat. The language
+model acts through real tools (cluster commands and node commands), but operates within
+deterministic bounds: a command-danger classifier, guards against looping, confirmation for
+irreversible actions, and a full audit trail.
 
-## Что делает
+The product was carved out as a standalone offering from an audio-processing platform where it
+grew (decisions ADR-0032 logging and RCA, ADR-0033 the panel, ADR-0037/0038 the autonomous agent,
+ADR-0041 the command executor and node-agent, see docs/adr). The extraction boundary is described
+in docs/BOUNDARY.md.
 
-Наблюдает кластер (поды, узлы, события), узлы (диски, процессор, память, процессы через
-привилегированный node-agent), логи (Loki) и трассы (Tempo, необязательно). Детерминированный
-конвейер RCA нормализует логи, агрегирует факты за один проход, прогоняет каталог детекторов,
-считает уверенность и собирает вердикт с реестром свидетельств, где каждое утверждение опирается
-на дословную цитату из лога. Лёгкий обученный классификатор SetFit маршрутизирует запросы и
-дообучается на трудных случаях, эскалированных к большой модели (активное обучение). Инциденты
-хранятся вечно с явным жизненным циклом. Агент в чате понимает произвольный запрос, сам смотрит и
-чинит, объясняя каждый шаг.
+## What it does
 
-## Компоненты
+It observes the cluster (pods, nodes, events), the nodes (disks, processor, memory, processes via
+the privileged node-agent), the logs (Loki) and the traces (Tempo, optional). The deterministic
+Root Cause Analysis (RCA) pipeline normalizes logs, aggregates facts in a single pass, runs a
+catalog of detectors, computes confidence and assembles a verdict with an evidence registry in
+which every assertion rests on a verbatim quote from a log line. A lightweight trained SetFit
+classifier routes requests and is further trained on the hard cases escalated to the large model
+(active learning). Incidents are stored permanently with an explicit lifecycle. The chat agent
+understands an arbitrary request, inspects and repairs on its own, and explains every step.
 
-Продукт это четыре образа плюс опциональный стек наблюдаемости.
+## Components
 
-`services/node-agent` привилегированный DaemonSet, выполняет команды на хостах узлов через
-nsenter строго списком аргументов без оболочки, закрыт токеном, наружу не публикуется. Даёт
-агенту рут на узлах для чистки диска, инспекции процессов и памяти.
+The product is four images plus an optional observability stack.
 
-`services/agent-panel` панель на FastAPI: чат-интерфейс, агентный цикл использования инструментов
-(agent_exec), детерминированный классификатор политики (policy), гарды против зацикливания
-(guards), центр инцидентов (incidents), клиент кластера (k8s), статусные сводки (status), каталог
-алертов и автопилот (alerts, autopilot). Клиенты внешних систем вынесены в llm.py и rca_client.py,
-а прикладные действия целевого приложения в необязательный app_adapter.py.
+`services/node-agent` is a privileged DaemonSet that executes commands on node hosts through
+nsenter strictly as an argument list without a shell, is closed off by a token, and is not
+published externally. It gives the agent root on the nodes for disk cleanup, process inspection
+and memory inspection.
 
-`services/rca` сервис детерминированного разбора логов: нормализация, агрегатор, детекторы,
-скоринг, вердикт, каскад маршрутизации с активным обучением.
+`services/agent-panel` is a FastAPI panel: the chat interface, the agentic tool-use loop
+(agent_exec), the deterministic policy classifier (policy), the anti-looping guards (guards), the
+incident center (incidents), the cluster client (k8s), the status summaries (status), and the
+alert catalog and autopilot (alerts, autopilot). Clients of external systems are separated into
+llm.py and rca_client.py, and the application actions of the target application into the optional
+app_adapter.py.
 
-`services/rca-trainer` CronJob дообучения классификатора SetFit на накопленных примерах с
-выгрузкой модели в объектное хранилище.
+`services/rca` is the deterministic log-analysis service: normalization, aggregator, detectors,
+scoring, verdict, and the routing cascade with active learning.
 
-Стек наблюдаемости (Loki, Alloy, Tempo, OpenTelemetry Collector, Grafana) в deploy/k8s опционален:
-если у вас уже есть Loki и Grafana, подключите продукт к ним, а не ставьте свои.
+`services/rca-trainer` is a CronJob that further trains the SetFit classifier on accumulated
+examples and uploads the model to object storage.
 
-## К чему подключается
+The observability stack (Loki, Alloy, Tempo, OpenTelemetry Collector, Grafana) in deploy/k8s is
+optional: if you already have Loki and Grafana, connect the product to them rather than deploying
+your own.
 
-Kubernetes (in-cluster service account или kubeconfig), лог-хранилище Loki (query_range), языковая
-модель по совместимому протоколу (vLLM, Ollama или иной прокси, отдающий текст на POST /completion),
-необязательно Tempo и OpenTelemetry для трасс и объектное хранилище для обученной модели. Всё
-задаётся переменными окружения, см. .env.example.
+## What it connects to
 
-## Модель автономии и безопасность
+Kubernetes (in-cluster service account or kubeconfig), a Loki log store (query_range), a language
+model over a compatible protocol (vLLM, Ollama or another proxy that returns text on
+POST /completion), optionally Tempo and OpenTelemetry for traces, and object storage for the
+trained model. Everything is set through environment variables, see .env.example.
 
-По умолчанию агент работает в сухом прогоне: наблюдает и эскалирует, но не действует, пока
-AGENT_AUTONOMOUS не включён. В автономном режиме чтение и безопасный ремонт (перезапуск сервисов из
-allowlist, чистка узла, возврат задач в очередь) выполняются сразу, а finance и destructive
-(удаление данных, DROP таблиц, снос томов) всегда требуют подтверждения оператора. Класс каждой
-команды определяет детерминированный классификатор policy.py вне модели, поэтому модель не может
-обойти подтверждение, а неизвестная мутирующая команда трактуется как опасная. Гарды ограничивают
-частоту действий, ставят кулдауны, срабатывает предохранитель после серии неудач, детектор
-осцилляции блокирует перекрёстные пары. Каждое исполнение пишется в аудит. Есть ручной режим, где
-агент собирает факты и предлагает варианты, а оператор выбирает или задаёт свою команду.
+## Autonomy model and safety
 
-## Развёртывание
+By default the agent runs in a dry run: it observes and escalates but does not act until
+AGENT_AUTONOMOUS is enabled. In autonomous mode, reads and safe repairs (restarting services from
+the allowlist, cleaning up a node, returning tasks to the queue) run immediately, while finance
+and destructive actions (deleting data, dropping tables, tearing down volumes) always require
+operator confirmation. The class of every command is decided by the deterministic classifier in
+policy.py outside the model, so the model cannot bypass confirmation, and an unknown mutating
+command is treated as dangerous. Guards limit the rate of actions, impose cooldowns, trip a
+circuit breaker after a streak of failures, and an oscillation detector blocks cross pairs. Every
+execution is written to the audit trail. There is a manual mode in which the agent gathers facts
+and proposes options, and the operator picks one or supplies their own command.
 
-Соберите и опубликуйте образы (задайте REGISTRY):
+## Deployment
+
+Build and publish the images (set REGISTRY):
 
 ```bash
 REGISTRY=registry.example.com:5000 deploy/build.sh
 ```
 
-Замените в deploy/k8s/*.yaml плейсхолдер REGISTRY_PLACEHOLDER на ваш реестр, проверьте пространство
-имён, класс хранилища и лейбл роли узла под свой кластер (манифесты перенесены из исходной
-платформы и требуют обзора). Создайте секреты панели и node-agent:
+In deploy/k8s/*.yaml replace the REGISTRY_PLACEHOLDER placeholder with your registry, and check
+the namespace, the storage class and the node-role label against your cluster (the manifests were
+carried over from the original platform and need review). Create the panel and node-agent secrets:
 
 ```bash
 kubectl -n aegil create secret generic panel-secrets \
@@ -86,17 +94,17 @@ kubectl -n aegil patch secret panel-secrets --type merge \
 kubectl apply -f deploy/k8s/
 ```
 
-Панель наружу не торчит. Доступ через туннель:
+The panel is not exposed externally. Access it through a tunnel:
 
 ```bash
 kubectl -n aegil port-forward svc/agent-panel 9109:9109
 ```
 
-и браузером на http://127.0.0.1:9109, вход токеном оператора.
+and open http://127.0.0.1:9109 in a browser, logging in with an operator token.
 
-## Тесты
+## Tests
 
-Все компоненты покрыты тестами без сети и без внешних зависимостей:
+All components are covered by tests that need no network and no external dependencies:
 
 ```bash
 cd services/agent-panel && for t in test_*.py; do python3 "$t"; done
@@ -105,9 +113,9 @@ cd ../node-agent && python3 test_node_agent.py
 cd ../rca-trainer && for t in test_*.py; do python3 "$t"; done
 ```
 
-## Статус
+## Status
 
-Версия 0.1.0, выделение из исходной платформы. Ядро (наблюдение, RCA, агент, node-agent) работает и
-покрыто тестами. Требуют доводки под чистый продукт: полная параметризация детекторов и порогов
-алертов, обзор перенесённых манифестов под конкретный кластер, Helm-чарт, документация контракта
-прикладного адаптера.
+Version 0.1.0, extraction from the original platform. The core (observation, RCA, agent,
+node-agent) works and is covered by tests. Still to be finished for a clean product: full
+parameterization of detectors and alert thresholds, review of the carried-over manifests against a
+specific cluster, a Helm chart, and documentation of the application-adapter contract.
